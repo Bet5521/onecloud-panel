@@ -28,10 +28,11 @@ var validSystemctlActions = map[string]bool{
 
 var idPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{1,32}$`)
 
-// Registry 配方注册表。
+// Registry 配方注册表（内置 + 自定义）。
 type Registry struct {
-	byID  map[string]*Recipe
-	order []string
+	byID     map[string]*Recipe
+	order    []string
+	customID map[string]*Recipe // 自定义应用（动态加载）
 }
 
 // Load 从 fsys 加载并校验全部配方；"_" 前缀文件为内部占位，跳过。
@@ -40,7 +41,7 @@ func Load(fsys fs.FS) (*Registry, error) {
 	if err != nil {
 		return nil, err
 	}
-	reg := &Registry{byID: map[string]*Recipe{}}
+	reg := &Registry{byID: map[string]*Recipe{}, customID: map[string]*Recipe{}}
 	var errs []string
 	for _, e := range entries {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".yaml") {
@@ -86,10 +87,45 @@ func (g *Registry) List() []*Recipe {
 	return out
 }
 
-// Get 按 ID 取配方。
+// Get 按 ID 取配方（先查内置，再查自定义）。
 func (g *Registry) Get(id string) (*Recipe, bool) {
 	r, ok := g.byID[id]
+	if ok {
+		return r, true
+	}
+	r, ok = g.customID[id]
 	return r, ok
+}
+
+// RegisterCustom 注册自定义应用配方。
+func (g *Registry) RegisterCustom(r *Recipe) {
+	if g.customID == nil {
+		g.customID = map[string]*Recipe{}
+	}
+	g.customID[r.ID] = r
+}
+
+// UnregisterCustom 注销自定义应用配方。
+func (g *Registry) UnregisterCustom(id string) {
+	delete(g.customID, id)
+}
+
+// ListAll 返回全部配方（内置 + 自定义）。
+func (g *Registry) ListAll() []*Recipe {
+	out := make([]*Recipe, 0, len(g.order)+len(g.customID))
+	for _, id := range g.order {
+		out = append(out, g.byID[id])
+	}
+	for _, r := range g.customID {
+		out = append(out, r)
+	}
+	return out
+}
+
+// IsCustom 判断是否为自定义应用。
+func (g *Registry) IsCustom(id string) bool {
+	_, ok := g.customID[id]
+	return ok
 }
 
 // Validate 校验单份配方；错误信息可直接展示。

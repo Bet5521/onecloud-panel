@@ -8,7 +8,7 @@ import (
 )
 
 func (a *API) listRecipes(w http.ResponseWriter, r *http.Request) {
-	list := a.recipes.List()
+	list := a.recipes.ListAll()
 
 	// 可选：携带节点架构与方式兼容性
 	arch := r.URL.Query().Get("arch")

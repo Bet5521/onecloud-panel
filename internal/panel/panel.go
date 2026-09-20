@@ -70,6 +70,11 @@ func Run(cfg *config.Panel) error {
 	appManager := apps.New(s, nodeSvc, recipeReg, box, asvc)
 	appManager.RegisterRunnerTasks(taskRunner)
 
+	// 同步自定义应用到配方注册表
+	if err := appManager.SyncCustomApps(); err != nil {
+		log.Printf("警告: 同步自定义应用失败: %v", err)
+	}
+
 	apiObj := api.New(s, authH, auth.NewMiddleware(sessions), asvc,
 		nodeSvc, recipeReg, taskRunner, appManager)
 

@@ -150,3 +150,54 @@ func (m *Manager) Store() *store.Store { return m.store }
 
 // Registry 暴露配方注册表。
 func (m *Manager) Registry() *recipes.Registry { return m.recipes }
+
+// SyncCustomApps 从数据库加载自定义应用并注册到配方表。
+func (m *Manager) SyncCustomApps() error {
+	customApps, err := m.store.ListCustomApps()
+	if err != nil {
+		return fmt.Errorf("加载自定义应用失败: %w", err)
+	}
+	// 先清空已注册的自定义应用
+	for _, r := range m.recipes.ListAll() {
+		if m.recipes.IsCustom(r.ID) {
+			m.recipes.UnregisterCustom(r.ID)
+		}
+	}
+	// 重新注册
+	for i := range customApps {
+		app := &customApps[i]
+		r, err := recipes.RecipeFromCustomApp(&recipes.CustomAppData{
+			ID:              app.ID,
+			AppID:           app.AppID,
+			Name:            app.Name,
+			Category:        app.Category,
+			Icon:            app.Icon,
+			Description:     app.Description,
+			Homepage:        app.Homepage,
+			Method:          app.Method,
+			Ports:           app.Ports,
+			Variables:       app.Variables,
+			DownloadURL:     app.DownloadURL,
+			UnitName:        app.UnitName,
+			UnitTemplate:    app.UnitTemplate,
+			InstallScript:   app.InstallScript,
+			UninstallScript: app.UninstallScript,
+			DockerImage:     app.DockerImage,
+			DockerPorts:     app.DockerPorts,
+			DockerVolumes:   app.DockerVolumes,
+			DockerEnv:       app.DockerEnv,
+			DockerNetwork:   app.DockerNetwork,
+			DockerRestart:   app.DockerRestart,
+			DockerPrivileged: app.DockerPrivileged,
+			HealthcheckType: app.HealthcheckType,
+			HealthcheckPort: app.HealthcheckPort,
+			HealthcheckPath: app.HealthcheckPath,
+			HealthcheckCmd:  app.HealthcheckCmd,
+		})
+		if err != nil {
+			return fmt.Errorf("转换自定义应用 %s 失败: %w", app.AppID, err)
+		}
+		m.recipes.RegisterCustom(r)
+	}
+	return nil
+}

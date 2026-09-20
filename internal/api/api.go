@@ -205,6 +205,18 @@ func (a *API) Handler() http.Handler {
 	mux.Handle("GET /api/recipes/{id}", a.mw.RequireAuth(
 		auth.RequirePermission(store.PermAppRead, http.HandlerFunc(a.getRecipe))))
 
+	// ---- 自定义应用 ----
+	mux.Handle("GET /api/custom-apps", a.mw.RequireAuth(
+		auth.RequirePermission(store.PermAppRead, http.HandlerFunc(a.listCustomApps))))
+	mux.Handle("GET /api/custom-apps/{id}", a.mw.RequireAuth(
+		auth.RequirePermission(store.PermAppRead, http.HandlerFunc(a.getCustomApp))))
+	mux.Handle("POST /api/custom-apps", a.mw.RequireAuth(
+		auth.RequirePermission(store.PermAppWrite, http.HandlerFunc(a.createCustomApp))))
+	mux.Handle("PUT /api/custom-apps/{id}", a.mw.RequireAuth(
+		auth.RequirePermission(store.PermAppWrite, http.HandlerFunc(a.updateCustomApp))))
+	mux.Handle("DELETE /api/custom-apps/{id}", a.mw.RequireAuth(
+		auth.RequirePermission(store.PermAppWrite, http.HandlerFunc(a.deleteCustomApp))))
+
 	// ---- 节点应用生命周期 ----
 	mux.Handle("GET /api/nodes/{id}/apps", a.mw.RequireAuth(
 		auth.RequirePermission(store.PermAppRead, http.HandlerFunc(a.listInstallations))))

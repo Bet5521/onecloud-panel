@@ -29,6 +29,7 @@ type Agent struct {
 	RegisterToken string // 一次性注册令牌
 	Token         string // 已注册节点的长期 Token（非注册模式使用）
 	InsecureTLS   bool   // 面板为自签 HTTPS 时跳过证书校验
+	TLSPin        string // 固定面板证书 SHA256 指纹，提供后跳过系统 CA 校验并校验指纹
 }
 
 func registerCommon(fs *flag.FlagSet, defListen string) *Common {
@@ -71,6 +72,8 @@ func ParseAgent(args []string) (*Agent, error) {
 	fs.StringVar(&a.Token, "token", os.Getenv("OCP_TOKEN"), "节点长期 Token (env: OCP_TOKEN)")
 	fs.BoolVar(&a.InsecureTLS, "insecure", envBool("OCP_INSECURE_TLS"),
 		"跳过面板 HTTPS 证书校验（自签证书场景）(env: OCP_INSECURE_TLS)")
+	fs.StringVar(&a.TLSPin, "tls-pin", os.Getenv("OCP_TLS_PIN"),
+		"固定面板证书 SHA256 指纹（sha256:xxxx）；提供后跳过系统 CA 校验并校验指纹，优先于 --insecure (env: OCP_TLS_PIN)")
 	if err := fs.Parse(args); err != nil {
 		return nil, err
 	}

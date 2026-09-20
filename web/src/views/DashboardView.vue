@@ -72,6 +72,39 @@
       <div v-if="showEmpty(nodes)" class="muted">暂无节点</div>
     </el-card>
 
+    <!-- 历史指标趋势 -->
+    <el-card shadow="never" style="margin-top: 14px">
+      <template #header>
+        <div class="card-head">
+          <span>历史指标趋势</span>
+          <div class="hist-head">
+            <el-select v-model="histNode" size="small" style="width: 180px" placeholder="选择节点" @change="loadHistory">
+              <el-option v-for="n in nodes" :key="n.id" :label="n.name" :value="n.id" />
+            </el-select>
+            <el-button text :loading="histLoading" @click="loadHistory">刷新</el-button>
+          </div>
+        </div>
+      </template>
+      <el-table v-if="hist.length" :data="hist" size="small" max-height="320" style="width: 100%">
+        <el-table-column label="时间" width="160">
+          <template #default="{ row }">{{ fmtTime(row.ts) }}</template>
+        </el-table-column>
+        <el-table-column label="CPU" width="110">
+          <template #default="{ row }">{{ (row.cpu_pct || 0).toFixed(1) }}%</template>
+        </el-table-column>
+        <el-table-column label="内存" width="110">
+          <template #default="{ row }">{{ (row.mem_pct || 0).toFixed(1) }}%</template>
+        </el-table-column>
+        <el-table-column label="磁盘" width="110">
+          <template #default="{ row }">{{ (row.disk_pct || 0).toFixed(1) }}%</template>
+        </el-table-column>
+        <el-table-column label="负载1m" width="100">
+          <template #default="{ row }">{{ (row.load1 || 0).toFixed(2) }}</template>
+        </el-table-column>
+      </el-table>
+      <div v-else class="muted">选择节点查看历史指标（每 30 秒采样一次，最近 24 小时）</div>
+    </el-card>
+
     <el-row :gutter="14" style="margin-top: 14px">
       <!-- 最近任务 -->
       <el-col :xs="24" :sm="10">
@@ -145,6 +178,11 @@ const num = (v) => (v === null || v === undefined ? UNKNOWN : v)
 // 只有「已成功加载且确实为空」才显示「暂无…」；否则由 loading/错误条说明状态。
 const showEmpty = (list) => loaded.value && !loadFailed.value && list.length === 0
 
+// 历史指标
+const histNode = ref(null)
+const hist = ref([])
+const histLoading = ref(false)
+
 const cards = computed(() => [
   { label: '节点总数', value: num(stats.value?.nodes_total), color: '#409eff' },
   { label: '在线节点', value: num(stats.value?.nodes_online), color: '#67c23a' },
@@ -194,6 +232,10 @@ async function load() {
     recentAudits.value = d.recent_audits ?? []
     recentTasks.value = d.recent_tasks ?? []
     nodes.value = d.nodes ?? []
+    if (!histNode.value && nodes.value.length) {
+      histNode.value = nodes.value[0].id
+      loadHistory()
+    }
     loaded.value = true
   } catch (e) {
     // 保留上一次成功的快照：刷新失败时把界面清空比留着旧数据更糟。
@@ -201,6 +243,19 @@ async function load() {
     showErr(e, '仪表盘加载失败')
   } finally {
     loading.value = false
+  }
+}
+
+async function loadHistory() {
+  if (!histNode.value) return
+  histLoading.value = true
+  try {
+    const d = await get('/api/dashboard/history?node=' + histNode.value + '&hours=24')
+    hist.value = d.items ?? []
+  } catch {
+    hist.value = []
+  } finally {
+    histLoading.value = false
   }
 }
 
@@ -212,6 +267,7 @@ onMounted(load)
 .stat-value { font-size: 30px; font-weight: 700; line-height: 1.2; }
 .stat-label { color: #909399; font-size: 13px; margin-top: 4px; }
 .card-head { display: flex; justify-content: space-between; align-items: center; }
+.hist-head { display: flex; gap: 8px; align-items: center; }
 .node-card {
   border: 1px solid #ebeef5;
   border-radius: 6px;

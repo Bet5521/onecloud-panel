@@ -38,6 +38,8 @@ type NodeDTO struct {
 	OwnerUserID              *int64 `json:"owner_user_id"`
 	Online                   bool   `json:"online"`
 	Reachable                bool   `json:"reachable"`
+	Tags                     string `json:"tags"`
+	Group                    string `json:"node_group"`
 }
 
 func toDTO(n *store.Node) NodeDTO {
@@ -49,7 +51,9 @@ func toDTO(n *store.Node) NodeDTO {
 		MemTotal: n.MemTotal, Docker: n.DockerVersion,
 		DockerMirrors: n.DockerMirrors, DockerInsecureRegistries: n.DockerInsecureRegistries,
 		LastSeen: n.LastSeen, OwnerUserID: n.OwnerUserID,
-		Online: n.Mode == "local" || node.IsOnline(n.LastSeen),
+		Tags:     n.Tags,
+		Group:    n.Group,
+		Online:   n.Mode == "local" || node.IsOnline(n.LastSeen),
 	}
 	if n.Address != "" {
 		d.Reachable = node.CheckReachability(n.Address, 2*time.Second)
@@ -119,6 +123,9 @@ func (a *API) listNodes(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		if on := r.URL.Query().Get("online"); on == "0" && dto.Online {
+			continue
+		}
+		if g := r.URL.Query().Get("group"); g != "" && dto.Group != g {
 			continue
 		}
 		out = append(out, dto)
@@ -209,11 +216,13 @@ func (a *API) manualAddNode(w http.ResponseWriter, r *http.Request) {
 }
 
 type updateNodeReq struct {
-	Name        string `json:"name"`
-	NetworkType string `json:"network_type"`
-	Address     string `json:"address"`
-	AltAddress  string `json:"alt_address"`
-	Status      string `json:"status"`
+	Name        string  `json:"name"`
+	NetworkType string  `json:"network_type"`
+	Address     string  `json:"address"`
+	AltAddress  string  `json:"alt_address"`
+	Status      string  `json:"status"`
+	Tags        *string `json:"tags"`
+	Group       *string `json:"node_group"`
 }
 
 func (a *API) updateNode(w http.ResponseWriter, r *http.Request) {
@@ -236,10 +245,18 @@ func (a *API) updateNode(w http.ResponseWriter, r *http.Request) {
 	if !assertNodeOwner(w, r, own) {
 		return
 	}
-	n, err := a.nodes.Confirm(id, req.Name, req.NetworkType, req.Address, req.AltAddress)
+	n := own
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeError(w, http.StatusNotFound, err.Error())
 		return
+	}
+	// 仅当修改基本信息时才走 Confirm（会刷新激活状态）；仅改标签/分组时不触碰状态
+	if req.Name != "" || req.NetworkType != "" || req.Address != "" || req.AltAddress != "" || req.Status != "" {
+		n, err = a.nodes.Confirm(id, req.Name, req.NetworkType, req.Address, req.AltAddress)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
 	}
 	if req.Status == "disabled" {
 		_ = a.store.SetNodeStatus(id, "disabled")
@@ -247,6 +264,16 @@ func (a *API) updateNode(w http.ResponseWriter, r *http.Request) {
 	} else if req.Status == "active" {
 		_ = a.store.SetNodeStatus(id, "active")
 		n.Status = "active"
+	}
+	if req.Tags != nil {
+		if err := a.store.SetNodeTags(id, *req.Tags); err == nil {
+			n.Tags = *req.Tags
+		}
+	}
+	if req.Group != nil {
+		if err := a.store.SetNodeGroup(id, *req.Group); err == nil {
+			n.Group = *req.Group
+		}
 	}
 	a.audit.Record(r, "node", "update", "node", strconv.FormatInt(id, 10), audit.ResultSuccess,
 		audit.DetailJSON(map[string]any{"name": n.Name, "network_type": n.NetworkType}))
@@ -278,6 +305,31 @@ func (a *API) deleteNode(w http.ResponseWriter, r *http.Request) {
 	a.EmitEvent(notify.EventNodeChange, "节点已移除",
 		fmt.Sprintf("节点「%s」已从集群移除。", nodeName))
 	writeJSON(w, map[string]string{"status": "ok"})
+}
+
+// ---- 批量操作 ----
+
+type batchNodeReq struct {
+	IDs    []int64 `json:"ids"`
+	Action string  `json:"action"`
+	Group  string  `json:"group"`
+	Tags   string  `json:"tags"`
+}
+
+func (a *API) batchNodes(w http.ResponseWriter, r *http.Request) {
+	var req batchNodeReq
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "请求格式错误")
+		return
+	}
+	n, err := a.nodes.BatchOp(req.IDs, req.Action, req.Group, req.Tags)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	a.audit.Record(r, "node", "batch_"+req.Action, "node", "", audit.ResultSuccess,
+		audit.DetailJSON(map[string]any{"count": n}))
+	writeJSON(w, map[string]any{"affected": n})
 }
 
 // ---- 网络建议 ----

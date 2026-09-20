@@ -47,7 +47,7 @@ func Run(cfg *config.Agent) error {
 			return errors.New("需要 --register-token（首次注册）或 --token（已注册）完成纳管")
 		}
 		port := listenPort(cfg.Listen)
-		if err := registerLoop(ctx, state, cfg.RegisterToken, port, cfg.InsecureTLS); err != nil {
+		if err := registerLoop(ctx, state, cfg.RegisterToken, port, cfg.InsecureTLS, cfg.TLSPin); err != nil {
 			return err
 		}
 		if err := saveState(cfg.DataDir, state); err != nil {
@@ -65,7 +65,7 @@ func Run(cfg *config.Agent) error {
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
-	go heartbeatLoop(ctx, cfg.DataDir, state, holder, cfg.InsecureTLS)
+	go heartbeatLoop(ctx, cfg.DataDir, state, holder, cfg.InsecureTLS, cfg.TLSPin)
 
 	go func() {
 		<-ctx.Done()
@@ -82,12 +82,12 @@ func Run(cfg *config.Agent) error {
 	return nil
 }
 
-func registerLoop(ctx context.Context, state *State, registerToken string, port int, insecure bool) error {
+func registerLoop(ctx context.Context, state *State, registerToken string, port int, insecure bool, pin string) error {
 	ticker := time.NewTicker(10 * time.Second)
 	defer ticker.Stop()
 	for {
 		regCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
-		resp, err := Register(regCtx, state.Server, registerToken, port, insecure)
+		resp, err := Register(regCtx, state.Server, registerToken, port, insecure, pin)
 		cancel()
 		if err == nil {
 			state.Token = resp.Token
@@ -103,7 +103,7 @@ func registerLoop(ctx context.Context, state *State, registerToken string, port 
 	}
 }
 
-func heartbeatLoop(ctx context.Context, dataDir string, state *State, holder *tokenHolder, insecure bool) {
+func heartbeatLoop(ctx context.Context, dataDir string, state *State, holder *tokenHolder, insecure bool, pin string) {
 	beat := func() {
 		host, err := system.Collect()
 		if err != nil {
@@ -112,7 +112,7 @@ func heartbeatLoop(ctx context.Context, dataDir string, state *State, holder *to
 		}
 		hctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 		defer cancel()
-		resp, err := Heartbeat(hctx, state.Server, holder.get(), host, insecure)
+		resp, err := Heartbeat(hctx, state.Server, holder.get(), host, insecure, pin)
 		if err != nil {
 			log.Printf("心跳失败: %v", err)
 			return

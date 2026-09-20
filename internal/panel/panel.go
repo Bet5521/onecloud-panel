@@ -304,6 +304,9 @@ func maintenanceLoop(ctx context.Context, s *store.Store, asvc *audit.Service) {
 		if n, err := s.CleanExpiredSessions(); err == nil && n > 0 {
 			log.Printf("清理过期会话 %d 条", n)
 		}
+		if n, err := s.PurgeMetricSamples(time.Now().Unix() - 90*86400); err == nil && n > 0 {
+			log.Printf("清理过期指标采样 %d 条", n)
+		}
 	}
 	timer := time.NewTimer(time.Minute)
 	defer timer.Stop()

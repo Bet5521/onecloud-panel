@@ -15,6 +15,9 @@
           <el-option label="在线" value="1" />
           <el-option label="离线" value="0" />
         </el-select>
+        <el-select v-model="fGroup" style="width: 140px" placeholder="全部分组" clearable @change="load">
+          <el-option v-for="g in groupOptions" :key="g" :label="g" :value="g" />
+        </el-select>
         <div class="toolbar-right">
           <el-button @click="load">刷新</el-button>
           <el-button v-if="can('node:write')" type="primary" @click="openAdd">添加节点</el-button>
@@ -22,9 +25,28 @@
       </div>
     </el-card>
 
+    <!-- 批量操作栏 -->
+    <el-card shadow="never" class="toolbar" v-if="selected.length" style="margin-top: 12px">
+      <div class="toolbar-inner">
+        <span>已选 {{ selected.length }} 个节点</span>
+        <el-select v-model="batchAction" style="width: 140px">
+          <el-option label="启用" value="enable" />
+          <el-option label="停用" value="disable" />
+          <el-option label="删除" value="delete" />
+          <el-option label="设分组" value="set-group" />
+          <el-option label="设标签" value="set-tags" />
+        </el-select>
+        <el-input v-if="batchAction === 'set-group'" v-model="batchGroup" placeholder="分组名" style="width: 140px" />
+        <el-input v-if="batchAction === 'set-tags'" v-model="batchTags" placeholder="标签，逗号分隔" style="width: 180px" />
+        <el-button type="primary" :loading="batching" @click="runBatch">执行</el-button>
+        <el-button @click="selected = []">取消</el-button>
+      </div>
+    </el-card>
+
     <!-- 节点表 -->
     <el-card shadow="never" style="margin-top: 12px" v-loading="loading">
-      <el-table :data="nodes" style="width: 100%" @row-click="openDetail">
+      <el-table :data="nodes" style="width: 100%" @row-click="openDetail" @selection-change="onSelect">
+        <el-table-column type="selection" width="44" />
         <el-table-column label="节点" min-width="170">
           <template #default="{ row }">
             <span class="node-dot" :class="row.online ? 'on' : 'off'" />
@@ -41,6 +63,18 @@
           </template>
         </el-table-column>
         <el-table-column prop="arch" label="架构" width="90" />
+        <el-table-column label="分组" width="110">
+          <template #default="{ row }">
+            <el-tag v-if="row.node_group" size="small" type="warning" effect="plain">{{ row.node_group }}</el-tag>
+            <span v-else class="muted">-</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="标签" min-width="140">
+          <template #default="{ row }">
+            <el-tag v-for="t in (row.tags || '').split(',').filter(Boolean)" :key="t" size="small" style="margin-right: 4px">{{ t }}</el-tag>
+            <span v-if="!row.tags" class="muted">-</span>
+          </template>
+        </el-table-column>
         <el-table-column label="地址" min-width="150" show-overflow-tooltip>
           <template #default="{ row }">{{ row.address || '-' }}</template>
         </el-table-column>
@@ -135,6 +169,22 @@
               </el-table-column>
             </el-table>
           </template>
+        </el-card>
+
+        <!-- 标签与分组 -->
+        <el-card v-if="can('node:write') || cur?.tags || cur?.node_group" shadow="never" class="section">
+          <template #header><span>标签与分组</span></template>
+          <el-form label-width="60px">
+            <el-form-item label="分组">
+              <el-input v-model="meta.group" placeholder="如 客厅、机房" :disabled="!can('node:write')" />
+            </el-form-item>
+            <el-form-item label="标签">
+              <el-input v-model="meta.tags" placeholder="逗号分隔，如 玩客云,ARM" :disabled="!can('node:write')" />
+            </el-form-item>
+            <el-form-item v-if="can('node:write')">
+              <el-button @click="saveMeta">保存</el-button>
+            </el-form-item>
+          </el-form>
         </el-card>
 
         <!-- 已装应用 -->
@@ -625,7 +675,7 @@
 </template>
 
 <script setup>
-import { ref, nextTick } from 'vue'
+import { ref, computed, nextTick } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { get, post, put, del, showErr } from '../api/http'
@@ -643,6 +693,20 @@ const nodes = ref([])
 const loading = ref(false)
 const fNet = ref('')
 const fOnline = ref('')
+const fGroup = ref('')
+
+const selected = ref([])
+const batchAction = ref('enable')
+const batchGroup = ref('')
+const batchTags = ref('')
+const batching = ref(false)
+const meta = ref({ tags: '', group: '' })
+
+const groupOptions = computed(() => {
+  const set = new Set()
+  for (const n of nodes.value) if (n.node_group) set.add(n.node_group)
+  return Array.from(set).sort()
+})
 
 const netMeta = {
   lan: { label: '局域网', tag: 'primary' },
@@ -657,6 +721,7 @@ async function load() {
     const q = new URLSearchParams()
     if (fNet.value) q.set('network_type', fNet.value)
     if (fOnline.value) q.set('online', fOnline.value)
+    if (fGroup.value) q.set('group', fGroup.value)
     const d = await get('/api/nodes' + (q.toString() ? '?' + q : ''))
     nodes.value = d.items
   } catch (e) {
@@ -689,6 +754,7 @@ async function openDetail(row) {
   drawer.value = true
   live.value = null
   liveErr.value = ''
+  meta.value = { tags: cur.value.tags || '', group: cur.value.node_group || '' }
   loadLive()
   loadInstallations()
   loadStorage()
@@ -1282,6 +1348,38 @@ function fmtUptime(s) {
   const d = Math.floor(s / 86400)
   const h = Math.floor((s % 86400) / 3600)
   return d > 0 ? `${d} 天 ${h} 小时` : `${h} 小时`
+}
+
+// ---- 批量操作 ----
+function onSelect(rows) { selected.value = rows }
+
+async function runBatch() {
+  if (!selected.value.length) return
+  const ids = selected.value.map((r) => r.id)
+  batching.value = true
+  try {
+    const body = { ids, action: batchAction.value }
+    if (batchAction.value === 'set-group') body.group = batchGroup.value
+    if (batchAction.value === 'set-tags') body.tags = batchTags.value
+    if (batchAction.value === 'delete') {
+      await ElMessageBox.confirm(`确认删除选中的 ${ids.length} 个节点？`, '批量删除', { type: 'warning' })
+    }
+    await post('/api/nodes/batch', body)
+    ElMessage.success('批量操作完成')
+    selected.value = []
+    load()
+  } finally {
+    batching.value = false
+  }
+}
+
+// ---- 标签与分组 ----
+async function saveMeta() {
+  if (!cur.value) return
+  await put('/api/nodes/' + cur.value.id, { tags: meta.value.tags, node_group: meta.value.group })
+  ElMessage.success('已保存标签与分组')
+  cur.value.tags = meta.value.tags
+  cur.value.node_group = meta.value.group
 }
 
 // ---- 节点操作 ----

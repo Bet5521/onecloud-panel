@@ -1,9 +1,13 @@
 package api
 
 import (
+	"io"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"onecloud-panel/internal/audit"
 	"onecloud-panel/internal/auth"
@@ -86,4 +90,84 @@ func (a *API) panelRestart(w http.ResponseWriter, r *http.Request) {
 	a.audit.Record(r, "settings", "restart", "user", username, audit.ResultSuccess,
 		audit.DetailJSON(map[string]any{"task_id": taskID}))
 	writeJSON(w, map[string]int64{"task_id": taskID})
+}
+
+// GET /api/panel/backup — 在线备份数据库为可下载文件。
+func (a *API) panelBackup(w http.ResponseWriter, r *http.Request) {
+	if a.dataDir == "" {
+		writeError(w, http.StatusInternalServerError, "数据目录未配置")
+		return
+	}
+	tmp, err := os.CreateTemp("", "ocp-backup-*.db")
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "创建临时备份失败")
+		return
+	}
+	tmpName := tmp.Name()
+	_ = tmp.Close()
+	defer os.Remove(tmpName)
+	if err := a.store.Backup(tmpName); err != nil {
+		writeError(w, http.StatusInternalServerError, "备份失败: "+err.Error())
+		return
+	}
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("Content-Disposition",
+		`attachment; filename="panel-`+time.Now().Format("20060102-150405")+`.db"`)
+	http.ServeFile(w, r, tmpName)
+}
+
+// POST /api/panel/restore — 上传备份文件恢复数据库，随后异步重启面板以加载新库。
+func (a *API) panelRestore(w http.ResponseWriter, r *http.Request) {
+	if a.dataDir == "" {
+		writeError(w, http.StatusInternalServerError, "数据目录未配置")
+		return
+	}
+	if a.selfSvc == nil {
+		writeError(w, http.StatusServiceUnavailable, "自身管理服务未启用")
+		return
+	}
+	if err := r.ParseMultipartForm(32 << 20); err != nil {
+		writeError(w, http.StatusBadRequest, "请求格式错误")
+		return
+	}
+	f, _, err := r.FormFile("file")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "缺少上传文件")
+		return
+	}
+	defer f.Close()
+	data, err := io.ReadAll(f)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "读取上传失败")
+		return
+	}
+	if len(data) < 16 || string(data[:15]) != "SQLite format 3" {
+		writeError(w, http.StatusBadRequest, "文件不是有效的 SQLite 数据库")
+		return
+	}
+	dbPath := filepath.Join(a.dataDir, "panel.db")
+	if err := os.WriteFile(dbPath, data, 0o600); err != nil {
+		writeError(w, http.StatusInternalServerError, "写入数据库失败: "+err.Error())
+		return
+	}
+	// 清掉可能残留的 WAL/SHM，避免旧事务干扰
+	for _, suf := range []string{"-wal", "-shm"} {
+		_ = os.Remove(dbPath + suf)
+	}
+	var userID int64
+	username := ""
+	if id := auth.FromContext(r.Context()); id != nil && id.User != nil {
+		userID = id.User.ID
+		username = id.User.Username
+	}
+	taskID, err := a.selfSvc.Restart(r.Context(), userID)
+	if err != nil {
+		a.audit.Record(r, "settings", "restore", "panel", "self", audit.ResultFailure,
+			audit.DetailJSON(map[string]any{"error": err.Error()}))
+		writeError(w, http.StatusBadRequest, "恢复已写入但重启失败: "+err.Error())
+		return
+	}
+	a.audit.Record(r, "settings", "restore", "user", username, audit.ResultSuccess,
+		audit.DetailJSON(map[string]any{"task_id": taskID}))
+	writeJSON(w, map[string]any{"task_id": taskID, "status": "restored"})
 }

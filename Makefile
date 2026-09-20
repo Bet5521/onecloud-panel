@@ -29,7 +29,7 @@ $(DIST)/$(BIN)-windows-amd64.exe: $(DIST)
 	GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags "$(LDFLAGS)" -o $@ ./cmd/onecloud-panel
 
 test:
-	CGO_ENABLED=0 go test ./... -p 1
+	CGO_ENABLED=0 go test -timeout 120s -count=1 ./... -p 1
 
 vet:
 	go vet ./...

@@ -189,6 +189,7 @@ func (s *Service) Heartbeat(req *agent.HeartbeatRequest) (*store.Node, error) {
 		if err := s.store.UpdateNodeInfo(n.ID, n); err != nil {
 			return nil, err
 		}
+		s.RecordSample(n.ID, req.Host)
 		if n.Status == "pending" {
 			// 心跳即证明存活；保持 pending 等管理员确认时改 active 由确认接口处理
 		}
@@ -216,7 +217,9 @@ func (s *Service) Confirm(id int64, name, networkType, address, altAddress strin
 	if address != "" {
 		n.Address = address
 	}
-	n.AltAddress = altAddress
+	if altAddress != "" {
+		n.AltAddress = altAddress
+	}
 	n.Status = "active"
 	if err := s.store.UpdateNodeConfirm(n); err != nil {
 		return nil, err
@@ -298,6 +301,15 @@ func (s *Service) RotateToken(id int64) (string, error) {
 // Get 读取节点。
 func (s *Service) Get(id int64) (*store.Node, error) { return s.store.GetNode(id) }
 
+// RecordSample 依据主机信息写入一条指标采样（心跳/本机刷新时调用）。
+func (s *Service) RecordSample(nodeID int64, h *system.HostInfo) {
+	if h == nil {
+		return
+	}
+	_, _ = s.store.RecordMetricSample(nodeID, time.Now().Unix(),
+		h.CPUPercent(), h.MemPercent(), h.DiskPercent(), h.LoadAvg[0])
+}
+
 // List 全部节点。历史数据里本机节点 network_type 可能为空，读取时兜底为 local。
 func (s *Service) List() ([]store.Node, error) {
 	nodes, err := s.store.ListNodes()
@@ -337,6 +349,41 @@ func (s *Service) ListFiltered(f store.NodeListFilter) ([]store.Node, error) {
 
 // Remove 删除节点。
 func (s *Service) Remove(id int64) error { return s.store.DeleteNode(id) }
+
+// BatchOp 对一组节点执行批量操作。
+// action 取值：enable / disable / delete / set-group / set-tags。
+// group / tags 仅 set-group / set-tags 时使用。
+func (s *Service) BatchOp(ids []int64, action, group, tags string) (int, error) {
+	if len(ids) == 0 {
+		return 0, errors.New("请选择至少一个节点")
+	}
+	affected := 0
+	for _, id := range ids {
+		var err error
+		switch action {
+		case "enable":
+			err = s.store.SetNodeStatus(id, "active")
+		case "disable":
+			err = s.store.SetNodeStatus(id, "disabled")
+		case "delete":
+			err = s.store.DeleteNode(id)
+		case "set-group":
+			err = s.store.SetNodeGroup(id, group)
+		case "set-tags":
+			err = s.store.SetNodeTags(id, tags)
+		default:
+			return affected, fmt.Errorf("未知批量操作: %s", action)
+		}
+		if err != nil {
+			if errors.Is(err, store.ErrNodeNotFound) {
+				continue
+			}
+			return affected, err
+		}
+		affected++
+	}
+	return affected, nil
+}
 
 // ---- 本机节点 ----
 
@@ -383,6 +430,7 @@ func (s *Service) EnsureLocalNode(host *system.HostInfo) (*store.Node, error) {
 	if err := s.store.UpdateNodeInfo(local.ID, local); err != nil {
 		return nil, err
 	}
+	s.RecordSample(local.ID, host)
 	return local, nil
 }
 

@@ -40,6 +40,17 @@ func Open(dbPath string) (*Store, error) {
 // Close 关闭数据库。
 func (s *Store) Close() error { return s.DB.Close() }
 
+// Backup 生成一致性离线备份到 dest（dest 必须事先不存在）。
+// 采用 SQLite VACUUM INTO，可在服务运行中安全备份（绕过 WAL）。
+func (s *Store) Backup(dest string) error {
+	if strings.ContainsAny(dest, "\x00'") {
+		return fmt.Errorf("非法的备份路径")
+	}
+	q := "VACUUM INTO '" + strings.ReplaceAll(dest, "'", "''") + "'"
+	_, err := s.DB.Exec(q)
+	return err
+}
+
 func (s *Store) migrate() error {
 	var version int
 	if err := s.DB.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {

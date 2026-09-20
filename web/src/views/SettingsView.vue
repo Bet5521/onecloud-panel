@@ -194,6 +194,19 @@
           <p class="hint">SMTP 用于接收登录页密码自助重置码；不配置时重置码会输出到面板服务日志。</p>
         </el-card>
 
+        <!-- ============ 数据备份与恢复 ============ -->
+        <el-card shadow="never" class="section-gap">
+          <template #header><span>数据备份与恢复</span></template>
+          <el-alert type="warning" :closable="false" show-icon style="margin-bottom: 12px"
+            title="恢复会用上传的备份覆盖当前数据库并重启面板，请谨慎操作" />
+          <el-space wrap>
+            <el-button type="primary" @click="downloadBackup">下载备份</el-button>
+            <el-button @click="pickRestore">选择备份文件恢复</el-button>
+            <input ref="restoreInput" type="file" accept=".db" style="display: none" @change="onRestoreFile" />
+          </el-space>
+          <p class="hint">备份为 panel.db 的一致性快照（VACUUM INTO），可离线留存；恢复后请在面板重启完成后重新登录。</p>
+        </el-card>
+
         <!-- ============ Docker 镜像加速与仓库 ============ -->
         <el-card shadow="never" class="section-gap" v-loading="loading">
           <template #header><span>Docker 镜像加速与第三方仓库（面板级默认）</span></template>
@@ -474,6 +487,38 @@ async function saveDocker() {
 }
 
 onMounted(load)
+
+// ---- 数据备份与恢复 ----
+const restoreInput = ref(null)
+function downloadBackup() {
+  window.location.href = '/api/panel/backup'
+}
+function pickRestore() {
+  if (restoreInput.value) restoreInput.value.click()
+}
+async function onRestoreFile(e) {
+  const file = e.target.files && e.target.files[0]
+  if (!file) return
+  try {
+    await ElMessageBox.confirm(`确认用「${file.name}」覆盖当前数据库并重启面板？`, '恢复确认', { type: 'warning' })
+  } catch {
+    e.target.value = ''
+    return
+  }
+  const fd = new FormData()
+  fd.append('file', file)
+  try {
+    const resp = await fetch('/api/panel/restore', { method: 'POST', body: fd, credentials: 'same-origin' })
+    const data = await resp.json().catch(() => ({}))
+    if (!resp.ok) throw new Error(data.error || `恢复失败（${resp.status}）`)
+    ElMessage.success('恢复成功，面板正在重启')
+    setTimeout(() => { session.clear(); window.location.href = '/login' }, 1500)
+  } catch (err) {
+    ElMessage.error(err.message || '恢复失败')
+  } finally {
+    e.target.value = ''
+  }
+}
 </script>
 
 <style scoped>

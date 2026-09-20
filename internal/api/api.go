@@ -135,6 +135,8 @@ func (a *API) Handler() http.Handler {
 		auth.RequirePermission(store.PermNodeWrite, http.HandlerFunc(a.updateNode))))
 	mux.Handle("DELETE /api/nodes/{id}", a.mw.RequireAuth(
 		auth.RequirePermission(store.PermNodeWrite, http.HandlerFunc(a.deleteNode))))
+	mux.Handle("POST /api/nodes/batch", a.mw.RequireAuth(
+		auth.RequirePermission(store.PermNodeWrite, http.HandlerFunc(a.batchNodes))))
 	mux.Handle("POST /api/nodes/{id}/rotate-token", a.mw.RequireAuth(
 		auth.RequirePermission(store.PermNodeWrite, http.HandlerFunc(a.rotateNodeToken))))
 	mux.Handle("GET /api/nodes/{id}/info", a.mw.RequireAuth(
@@ -199,6 +201,10 @@ func (a *API) Handler() http.Handler {
 		auth.RequirePermission(store.PermSettingsRead, http.HandlerFunc(a.updateCheck))))
 	mux.Handle("POST /api/update/apply", a.mw.RequireAuth(
 		auth.RequirePermission(store.PermSettingsWrite, http.HandlerFunc(a.updateApply))))
+	mux.Handle("GET /api/panel/backup", a.mw.RequireAuth(
+		auth.RequirePermission(store.PermSettingsRead, http.HandlerFunc(a.panelBackup))))
+	mux.Handle("POST /api/panel/restore", a.mw.RequireAuth(
+		auth.RequirePermission(store.PermSettingsWrite, http.HandlerFunc(a.panelRestore))))
 	mux.Handle("GET /api/settings", a.mw.RequireAuth(
 		auth.RequirePermission(store.PermSettingsRead, a.getSettings)))
 	mux.Handle("PUT /api/settings", a.mw.RequireAuth(
@@ -235,6 +241,8 @@ func (a *API) Handler() http.Handler {
 	// ---- 仪表盘 ----
 	mux.Handle("GET /api/dashboard/summary", a.mw.RequireAuth(
 		auth.RequirePermission(store.PermDashboardRead, http.HandlerFunc(a.dashboardSummary))))
+	mux.Handle("GET /api/dashboard/history", a.mw.RequireAuth(
+		auth.RequirePermission(store.PermDashboardRead, http.HandlerFunc(a.dashboardHistory))))
 
 	// ---- 用户管理 ----
 	mux.Handle("GET /api/users", a.mw.RequireAuth(

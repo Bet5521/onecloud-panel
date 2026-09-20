@@ -79,6 +79,8 @@ type Node struct {
 	NetworkType              string // lan / wireguard / public / local
 	Address                  string
 	AltAddress               string
+	Tags                     string // 逗号分隔的标签，如 "客厅,玩客云"
+	Group                    string // 分组（单值），用于批量管理
 	AgentTokenHash           string
 	Hostname                 string
 	OSName                   string
@@ -153,6 +155,17 @@ type BackgroundTask struct {
 	CreatedAt  int64
 	StartedAt  *int64
 	FinishedAt *int64
+}
+
+// MetricSample 节点历史指标采样（每 30s 一次）。
+type MetricSample struct {
+	ID      int64
+	NodeID  int64
+	Ts      int64
+	CPUPct  float64
+	MemPct  float64
+	DiskPct float64
+	Load1   float64
 }
 
 func now() int64 { return time.Now().Unix() }

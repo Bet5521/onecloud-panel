@@ -14,12 +14,14 @@ func (s *Store) CreateNode(n *Node) (int64, error) {
 		`INSERT INTO nodes
 		 (name, mode, status, network_type, address, alt_address, agent_token_hash,
 		  hostname, os_name, os_version, kernel, arch, cpu_cores, mem_total, docker_version,
-		  docker_mirrors, docker_insecure_registries, last_seen, owner_user_id, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		  docker_mirrors, docker_insecure_registries, last_seen, owner_user_id,
+		  tags, node_group, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		n.Name, n.Mode, n.Status, n.NetworkType, n.Address, n.AltAddress,
 		n.AgentTokenHash, n.Hostname, n.OSName, n.OSVersion, n.Kernel, n.Arch,
 		n.CPUCores, n.MemTotal, n.DockerVersion,
 		n.DockerMirrors, n.DockerInsecureRegistries, n.LastSeen, n.OwnerUserID,
+		n.Tags, n.Group,
 		n.CreatedAt, n.UpdatedAt)
 	if err != nil {
 		return 0, err
@@ -42,7 +44,8 @@ func (s *Store) ListNodes() ([]Node, error) {
 	rows, err := s.DB.Query(
 		`SELECT id, name, mode, status, network_type, address, alt_address, agent_token_hash,
 		        hostname, os_name, os_version, kernel, arch, cpu_cores, mem_total, docker_version,
-		        docker_mirrors, docker_insecure_registries, last_seen, owner_user_id, created_at, updated_at
+		        docker_mirrors, docker_insecure_registries, last_seen, owner_user_id,
+		        tags, node_group, created_at, updated_at
 		 FROM nodes ORDER BY (mode = 'local') DESC, id ASC`)
 	if err != nil {
 		return nil, err
@@ -100,9 +103,23 @@ func joinAnd(conds []string) string {
 // UpdateNodeConfirm 确认/编辑节点基本信息。
 func (s *Store) UpdateNodeConfirm(n *Node) error {
 	_, err := s.DB.Exec(
-		`UPDATE nodes SET name=?, status=?, network_type=?, address=?, alt_address=?, updated_at=?
+		`UPDATE nodes SET name=?, status=?, network_type=?, address=?, alt_address=?,
+		   tags=?, node_group=?, updated_at=?
 		 WHERE id=?`,
-		n.Name, n.Status, n.NetworkType, n.Address, n.AltAddress, now(), n.ID)
+		n.Name, n.Status, n.NetworkType, n.Address, n.AltAddress,
+		n.Tags, n.Group, now(), n.ID)
+	return err
+}
+
+// SetNodeGroup 更新节点分组（批量操作 set-group 使用）。
+func (s *Store) SetNodeGroup(id int64, group string) error {
+	_, err := s.DB.Exec(`UPDATE nodes SET node_group=?, updated_at=? WHERE id=?`, group, now(), id)
+	return err
+}
+
+// SetNodeTags 更新节点标签（逗号分隔文本，批量操作 set-tags 使用）。
+func (s *Store) SetNodeTags(id int64, tags string) error {
+	_, err := s.DB.Exec(`UPDATE nodes SET tags=?, updated_at=? WHERE id=?`, tags, now(), id)
 	return err
 }
 
@@ -168,7 +185,8 @@ func (s *Store) DeleteNode(id int64) error {
 func (s *Store) node(where string, args ...any) (*Node, error) {
 	q := `SELECT id, name, mode, status, network_type, address, alt_address, agent_token_hash,
 	             hostname, os_name, os_version, kernel, arch, cpu_cores, mem_total, docker_version,
-	             docker_mirrors, docker_insecure_registries, last_seen, owner_user_id, created_at, updated_at
+	             docker_mirrors, docker_insecure_registries, last_seen, owner_user_id,
+	             tags, node_group, created_at, updated_at
 	      FROM nodes ` + where
 	n := &Node{}
 	var owner sql.NullInt64
@@ -177,6 +195,7 @@ func (s *Store) node(where string, args ...any) (*Node, error) {
 		&n.AgentTokenHash, &n.Hostname, &n.OSName, &n.OSVersion, &n.Kernel, &n.Arch,
 		&n.CPUCores, &n.MemTotal, &n.DockerVersion,
 		&n.DockerMirrors, &n.DockerInsecureRegistries, &n.LastSeen, &owner,
+		&n.Tags, &n.Group,
 		&n.CreatedAt, &n.UpdatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNodeNotFound
@@ -207,6 +226,7 @@ func scanNodes(rows *sql.Rows) ([]Node, error) {
 			&n.AgentTokenHash, &n.Hostname, &n.OSName, &n.OSVersion, &n.Kernel, &n.Arch,
 			&n.CPUCores, &n.MemTotal, &n.DockerVersion,
 			&n.DockerMirrors, &n.DockerInsecureRegistries, &n.LastSeen, &owner,
+			&n.Tags, &n.Group,
 			&n.CreatedAt, &n.UpdatedAt); err != nil {
 			return nil, err
 		}

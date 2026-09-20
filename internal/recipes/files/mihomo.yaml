@@ -1,0 +1,68 @@
+api_version: 1
+id: mihomo
+name: mihomo (Clash Meta)
+category: 网络
+icon: zap
+description: Clash Meta 内核的规则代理，支持多种协议与混合入站端口。
+homepage: https://github.com/MetaCubeX/mihomo
+methods: [native, docker]
+ports:
+  - {port: 7890, proto: tcp, description: 混合代理端口}
+  - {port: 9090, proto: tcp, description: RESTful 控制接口}
+config_files:
+  - {path: /etc/mihomo/config.yaml, description: 主配置（可替换为订阅）}
+variables:
+  - key: version
+    name: 版本
+    type: string
+    default: "1.19.31"
+  - key: proxy_port
+    name: 代理端口
+    type: int
+    default: "7890"
+  - key: api_port
+    name: 控制端口
+    type: int
+    default: "9090"
+healthcheck: {type: tcp, port: 9090}
+native:
+  arches: [armv7l, aarch64, x86_64, i386]
+  unit_name: mihomo.service
+  unit_template: |
+    [Unit]
+    Description=mihomo daemon
+    After=network-online.target
+    Wants=network-online.target
+    [Service]
+    ExecStart=/usr/local/bin/mihomo -d /etc/mihomo
+    Restart=on-failure
+    RestartSec=5s
+    [Install]
+    WantedBy=multi-user.target
+  install_steps:
+    - name: 建目录
+      mkdir: [/etc/mihomo]
+    - name: 下载程序
+      download:
+        url: https://github.com/MetaCubeX/mihomo/releases/download/v{{.Vars.version}}/mihomo-linux-{{.Node.ArchV7}}-v{{.Vars.version}}.gz
+        dest: /tmp/mihomo.gz
+    - name: 解压并安装
+      exec: {command: sh, args: ["-c", "gzip -d -f /tmp/mihomo.gz && mv /tmp/mihomo /usr/local/bin/mihomo && chmod +x /usr/local/bin/mihomo"]}
+    - name: 写初始配置
+      write:
+        path: /etc/mihomo/config.yaml
+        content: |
+          mixed-port: {{.Vars.proxy_port}}
+          allow-lan: true
+          mode: rule
+          log-level: info
+          external-controller: 0.0.0.0:{{.Vars.api_port}}
+          secret: ""
+  uninstall_steps:
+    - name: 删除二进制
+      exec: {command: rm, args: ["-f", "/usr/local/bin/mihomo"]}
+docker:
+  arches: [aarch64, x86_64]
+  image: metacubex/mihomo:latest
+  ports: ["7890:7890/tcp", "9090:9090/tcp"]
+  volumes: [/var/lib/mihomo:/root/.config/mihomo]

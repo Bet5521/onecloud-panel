@@ -1,0 +1,17 @@
+api_version: 1
+id: memos
+name: Memos
+category: 效率
+icon: edit
+description: 轻量级自托管备忘录/碎片笔记服务，支持 Markdown 与多用户。
+homepage: https://github.com/usememos/memos
+methods: [docker]
+ports:
+  - {port: 5230, proto: tcp, description: Web}
+healthcheck: {type: http, port: 5230, path: /}
+docker:
+  arches: [armv7l, aarch64, x86_64]
+  # Docker Hub 组织已改为 neosmemo 且不再提供 latest 标签；0.25 为支持 armv7 的稳定版本。
+  image: neosmemo/memos:0.25
+  ports: ["5230:5230"]
+  volumes: [/var/lib/memos:/var/opt/memos]

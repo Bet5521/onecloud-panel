@@ -1,0 +1,30 @@
+api_version: 1
+id: piwigo
+name: Piwigo
+category: 多媒体
+icon: image
+description: 开源网络相册；本配方使用 linuxserver 镜像，需要单独的 MariaDB/MySQL 实例。
+homepage: https://github.com/Piwigo/Piwigo
+methods: [docker]
+ports:
+  - {port: 8080, proto: tcp, description: Web}
+healthcheck: {type: http, port: 8080, path: /}
+variables:
+  - {key: db_host, name: 数据库地址, type: string, required: true}
+  - {key: db_name, name: 数据库名, type: string, default: piwigo}
+  - {key: db_user, name: 数据库用户, type: string, default: piwigo}
+  - {key: db_password, name: 数据库密码, type: string, required: true}
+docker:
+  arches: [armv7l, aarch64, x86_64]
+  image: linuxserver/piwigo:latest
+  ports: ["8080:80"]
+  env:
+    - PUID=1000
+    - PGID=1000
+    - MYSQL_HOST={{.Vars.db_host}}
+    - MYSQL_DATABASE={{.Vars.db_name}}
+    - MYSQL_USER={{.Vars.db_user}}
+    - MYSQL_PASSWORD={{.Vars.db_password}}
+  volumes:
+    - /var/lib/piwigo/config:/config
+    - /var/lib/piwigo/gallery:/gallery

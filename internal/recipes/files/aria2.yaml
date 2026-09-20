@@ -1,0 +1,24 @@
+api_version: 1
+id: aria2
+name: aria2 (+AriaNg)
+category: 下载
+icon: download-cloud
+description: 轻量多协议下载工具（HTTP/FTP/BT/磁力），内置 AriaNg Web 界面。
+homepage: https://github.com/aria2/aria2
+methods: [docker]
+ports:
+  - {port: 8080, proto: tcp, description: AriaNg Web 与 RPC}
+healthcheck: {type: http, port: 8080, path: /}
+variables:
+  - {key: rpc_secret, name: RPC 密钥, type: string, default: ""}
+docker:
+  arches: [armv7l, aarch64, x86_64]
+  image: hurlenko/aria2-ariang:latest
+  ports: ["8080:8080"]
+  env:
+    - PUID=1000
+    - PGID=1000
+    - RPC_SECRET={{.Vars.rpc_secret}}
+  volumes:
+    - /var/lib/aria2/data:/aria2/data
+    - /var/lib/aria2/conf:/aria2/conf

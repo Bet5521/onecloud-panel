@@ -1,0 +1,60 @@
+api_version: 1
+id: wireguard
+name: WireGuard
+category: 网络
+icon: vpn
+description: 内核级高性能 VPN；安装时自动生成 wg0 接口密钥对，编辑配置添加 peer 后重启生效。面板节点可经该网络接入。
+homepage: https://www.wireguard.com
+methods: [native]
+ports:
+  - {port: 51820, proto: udp, description: WireGuard 监听（默认）}
+config_files:
+  - {path: /etc/wireguard/wg0.conf, description: wg0 接口配置（含私钥，0600）}
+variables:
+  - {key: wg_address, name: 本端接口地址, type: string, required: true, description: "如 10.13.13.1/24"}
+  - {key: wg_listen_port, name: 监听端口, type: int, default: "51820"}
+volumes: [/etc/wireguard]
+healthcheck:
+  type: command
+  command: ["wg", "show", "wg0"]
+native:
+  arches: [armv7l, aarch64, x86_64, i386]
+  unit_name: wg-quick-wg0.service
+  unit_template: |
+    [Unit]
+    Description=WireGuard via wg-quick for wg0
+    After=network-online.target
+    Wants=network-online.target
+    [Service]
+    Type=oneshot
+    RemainAfterExit=yes
+    ExecStart=/usr/bin/wg-quick up wg0
+    ExecStop=/usr/bin/wg-quick down wg0
+    [Install]
+    WantedBy=multi-user.target
+  install_steps:
+    - name: 安装 wireguard 软件包
+      apt: [wireguard]
+    - name: 生成 wg0 配置与密钥对
+      exec:
+        command: sh
+        args:
+          - -c
+          - |
+            set -e
+            mkdir -p /etc/wireguard
+            chmod 700 /etc/wireguard
+            if [ ! -s /etc/wireguard/wg0.conf ]; then
+              umask 077
+              key=$(wg genkey)
+              pub=$(printf '%s' "$key" | wg pubkey)
+              cat > /etc/wireguard/wg0.conf <<EOF
+            [Interface]
+            Address = {{.Vars.wg_address}}
+            ListenPort = {{.Vars.wg_listen_port}}
+            PrivateKey = $key
+            EOF
+              echo "已生成密钥对，本端公钥: $pub"
+            else
+              echo "/etc/wireguard/wg0.conf 已存在，保留"
+            fi

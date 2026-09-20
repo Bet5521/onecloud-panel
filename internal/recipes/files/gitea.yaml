@@ -1,0 +1,49 @@
+api_version: 1
+id: gitea
+name: Gitea
+category: 开发
+icon: git
+description: 轻量自托管 Git 服务，内置 SQLite 支持与 Web 安装向导。
+homepage: https://github.com/go-gitea/gitea
+methods: [native, docker]
+ports:
+  - {port: 3000, proto: tcp, description: Web}
+  - {port: 2222, proto: tcp, description: SSH（可选）}
+variables:
+  - key: version
+    name: 版本
+    type: string
+    default: "1.27.3"
+healthcheck: {type: http, port: 3000, path: /}
+native:
+  arches: [armv7l, aarch64, x86_64, i386]
+  unit_name: gitea.service
+  unit_template: |
+    [Unit]
+    Description=Gitea
+    After=network-online.target
+    Wants=network-online.target
+    [Service]
+    Environment=HOME=/var/lib/gitea GITEA_CUSTOM=/var/lib/gitea/custom
+    ExecStart=/usr/local/bin/gitea web --work-path /var/lib/gitea
+    Restart=on-failure
+    RestartSec=5s
+    [Install]
+    WantedBy=multi-user.target
+  install_steps:
+    - name: 建目录
+      mkdir: [/var/lib/gitea/custom/conf]
+    - name: 下载二进制
+      download:
+        # Gitea 官方仅发布 arm-5/arm-6 二进制，arm-6 可在 armv7 CPU 上运行
+        url: https://dl.gitea.com/gitea/{{.Vars.version}}/gitea-{{.Vars.version}}-linux-{{if eq .Node.Arch "armv7l"}}arm-6{{else}}{{.Node.ArchGO}}{{end}}
+        dest: /usr/local/bin/gitea
+        mode: 0755
+  uninstall_steps:
+    - name: 删除二进制
+      exec: {command: rm, args: ["-f", "/usr/local/bin/gitea"]}
+docker:
+  arches: [armv7l, aarch64, x86_64, i386]
+  image: gitea/gitea:latest
+  ports: ["3000:3000", "2222:22"]
+  volumes: [/var/lib/gitea:/data]

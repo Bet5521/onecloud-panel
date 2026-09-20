@@ -1,0 +1,43 @@
+api_version: 1
+id: cloudflared
+name: Cloudflared
+category: 网络
+icon: cloud
+description: Cloudflare Tunnel 隧道客户端，将内网服务安全暴露到 Cloudflare 网络，无需公网 IP 与开放入站端口。
+homepage: https://github.com/cloudflare/cloudflared
+methods: [native, docker]
+variables:
+  - key: tunnel_token
+    name: 隧道 Token
+    type: string
+    required: true
+    description: 在 Cloudflare Zero Trust → Networks → Tunnels 创建隧道后获取的 token
+native:
+  arches: [armv7l, aarch64, x86_64, i386]
+  unit_name: cloudflared.service
+  unit_template: |
+    [Unit]
+    Description=Cloudflare Tunnel
+    After=network-online.target
+    Wants=network-online.target
+    [Service]
+    TimeoutStartSec=0
+    ExecStart=/usr/local/bin/cloudflared tunnel --no-autoupdate run --token '{{.Vars.tunnel_token}}'
+    Restart=on-failure
+    RestartSec=5s
+    [Install]
+    WantedBy=multi-user.target
+  install_steps:
+    - name: 下载二进制
+      download:
+        url: https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-{{.Node.ArchRel}}
+        dest: /usr/local/bin/cloudflared
+        mode: 0755
+  uninstall_steps:
+    - name: 删除二进制
+      exec: {command: rm, args: ["-f", "/usr/local/bin/cloudflared"]}
+docker:
+  arches: [armv7l, aarch64, x86_64, i386]
+  image: cloudflare/cloudflared:latest
+  env: ["TUNNEL_TOKEN={{.Vars.tunnel_token}}"]
+  restart_policy: always

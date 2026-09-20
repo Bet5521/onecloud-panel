@@ -1,0 +1,19 @@
+api_version: 1
+id: xiaomusic
+name: XiaoMusic
+category: 多媒体
+icon: music
+description: 让小爱音箱播放本地音乐，Web 页面管理歌曲与歌单，支持语音点歌。
+homepage: https://github.com/hanxi/xiaomusic
+methods: [docker]
+ports:
+  - {port: 58090, proto: tcp, description: Web}
+healthcheck: {type: http, port: 58090, path: /}
+docker:
+  arches: [armv7l, aarch64, x86_64]
+  image: hanxi/xiaomusic:latest
+  ports: ["58090:8090"]
+  env: ["XIAOMUSIC_PUBLIC_PORT=58090"]
+  volumes:
+    - /var/lib/xiaomusic/music:/app/music
+    - /var/lib/xiaomusic/conf:/app/conf

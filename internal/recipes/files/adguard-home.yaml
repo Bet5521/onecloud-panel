@@ -1,0 +1,65 @@
+api_version: 1
+id: adguard-home
+name: AdGuard Home
+category: 网络
+icon: shield
+description: 全网广告与追踪拦截 DNS 服务器，带 Web 管理界面，支持 DHCP。安装后需访问 3000 端口完成初始化向导，DNS 服务才会启动。
+homepage: https://github.com/AdguardTeam/AdGuardHome
+methods: [native, docker]
+ports:
+  - {port: 53, proto: tcp, description: DNS}
+  - {port: 53, proto: udp, description: DNS}
+  - {port: 3000, proto: tcp, description: 初始化向导（安装后访问，完成初始化后关闭）}
+healthcheck: {type: tcp, port: 3000}
+config_files:
+  - {path: /var/lib/adguardhome/conf/AdGuardHome.yaml, description: 主配置}
+native:
+  arches: [armv7l, aarch64, x86_64, i386]
+  unit_name: adguardhome.service
+  unit_template: |
+    [Unit]
+    Description=AdGuard Home
+    After=network-online.target
+    Wants=network-online.target
+    [Service]
+    ExecStart=/opt/AdGuardHome/AdGuardHome --no-check-update -w /var/lib/adguardhome/work -c /var/lib/adguardhome/conf/AdGuardHome.yaml
+    Restart=on-failure
+    RestartSec=5s
+    [Install]
+    WantedBy=multi-user.target
+  install_steps:
+    - name: 建目录
+      mkdir: [/var/lib/adguardhome/conf, /var/lib/adguardhome/work]
+    - name: 释放 53 端口（停用 systemd-resolved 桩监听）
+      write:
+        path: /etc/systemd/resolved.conf.d/99-dns-stub-off.conf
+        mode: 0644
+        content: |
+          [Resolve]
+          DNSStubListener=no
+    - name: 切换 resolv.conf 并重启 resolved
+      exec:
+        command: sh
+        args:
+          - -c
+          - |
+            if systemctl is-active --quiet systemd-resolved 2>/dev/null; then
+              ln -sf /run/systemd/resolve/resolv.conf /etc/resolv.conf
+              systemctl restart systemd-resolved
+            fi
+    - name: 下载发布包
+      download:
+        url: https://github.com/AdguardTeam/AdGuardHome/releases/latest/download/AdGuardHome_linux_{{.Node.ArchV7}}.tar.gz
+        dest: /tmp/agh.tgz
+    - name: 解压到 /opt
+      exec: {command: tar, args: ["xzf", "/tmp/agh.tgz", "-C", "/opt"]}
+  uninstall_steps:
+    - name: 删除程序
+      exec: {command: rm, args: ["-rf", "/opt/AdGuardHome"]}
+docker:
+  arches: [armv7l, aarch64, x86_64, i386]
+  image: adguard/adguardhome:latest
+  ports: ["3000:3000", "53:53/tcp", "53:53/udp"]
+  volumes:
+    - /var/lib/adguardhome/conf:/opt/adguardhome/conf
+    - /var/lib/adguardhome/work:/opt/adguardhome/work

@@ -1,0 +1,17 @@
+api_version: 1
+id: home-assistant
+name: Home Assistant
+category: 智能家居
+icon: home
+description: 开源智能家居中枢（Container 方式），使用 host 网络以支持设备自动发现。
+homepage: https://github.com/home-assistant/core
+methods: [docker]
+ports:
+  - {port: 8123, proto: tcp, description: Web}
+healthcheck: {type: http, port: 8123, path: /}
+docker:
+  arches: [armv7l, aarch64, x86_64]
+  image: homeassistant/home-assistant:stable
+  network_mode: host
+  volumes: [/var/lib/homeassistant:/config]
+  restart_policy: unless-stopped

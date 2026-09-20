@@ -1,0 +1,62 @@
+api_version: 1
+id: cups
+name: CUPS 打印服务
+category: 外设
+icon: printer
+description: CUPS 打印服务与 Web 管理界面（:631），已配置允许局域网访问管理页。
+homepage: https://github.com/OpenPrinting/cups
+methods: [native, docker]
+ports:
+  - {port: 631, proto: tcp, description: Web 管理}
+config_files:
+  - {path: /etc/cups/cupsd.conf, description: CUPS 主配置}
+  - {path: /etc/cups/printers.conf, optional: true, description: 打印机配置}
+healthcheck: {type: tcp, port: 631}
+native:
+  arches: [armv7l, aarch64, x86_64, i386]
+  unit_name: cups.service
+  unit_template: |
+    [Unit]
+    Description=CUPS Scheduler
+    After=network.target
+    [Service]
+    ExecStart=/usr/sbin/cupsd -f
+    Restart=on-failure
+    [Install]
+    WantedBy=multi-user.target
+  install_steps:
+    - name: 安装 CUPS
+      apt: [cups]
+    - name: 写 cupsd.conf
+      write:
+        path: /etc/cups/cupsd.conf
+        content: |
+          LogLevel warn
+          Listen /run/cups/cups.sock
+          Port 631
+          Browsing No
+          DefaultAuthType Basic
+          WebInterface Yes
+          <Location />
+            Order allow,deny
+            Allow @LOCAL
+          </Location>
+          <Location /admin>
+            Order allow,deny
+            Allow @LOCAL
+          </Location>
+          <Location /admin/conf>
+            AuthType Default
+            Require user @SYSTEM
+            Order allow,deny
+            Allow @LOCAL
+          </Location>
+  uninstall_steps:
+    - name: 移除配置
+      exec: {command: rm, args: ["-f", "/etc/cups/cupsd.conf"]}
+docker:
+  arches: [aarch64, x86_64]
+  image: olbat/cupsd:latest
+  ports: ["631:631"]
+  privileged: true
+  volumes: [/var/run/dbus:/var/run/dbus]

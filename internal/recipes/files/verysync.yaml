@@ -1,0 +1,47 @@
+api_version: 1
+id: verysync
+name: 微力同步 (verysync)
+category: 文件
+icon: git-branch
+description: 国产 P2P 文件同步工具，智能中继与内网穿透场景下的同步。
+homepage: https://www.verysync.com
+methods: [native, docker]
+ports:
+  - {port: 8886, proto: tcp, description: Web 管理}
+variables:
+  - key: version
+    name: 版本
+    type: string
+    default: "2.30.4"
+healthcheck: {type: tcp, port: 8886}
+native:
+  arches: [armv7l, aarch64, x86_64, i386]
+  unit_name: verysync.service
+  unit_template: |
+    [Unit]
+    Description=verysync
+    After=network-online.target
+    Wants=network-online.target
+    [Service]
+    ExecStart=/opt/verysync/verysync -no-browser -no-restart -home /var/lib/verysync
+    Restart=on-failure
+    RestartSec=5s
+    [Install]
+    WantedBy=multi-user.target
+  install_steps:
+    - name: 建目录
+      mkdir: [/opt/verysync, /var/lib/verysync]
+    - name: 下载发布包
+      download:
+        url: https://dl-cn.verysync.com/releases/v{{.Vars.version}}/verysync-linux-{{.Node.ArchRel}}-v{{.Vars.version}}.tar.gz
+        dest: /tmp/vs.tgz
+    - name: 解压到 /opt/verysync
+      exec: {command: tar, args: ["--strip-components=1", "-xzf", "/tmp/vs.tgz", "-C", "/opt/verysync"]}
+  uninstall_steps:
+    - name: 删除程序
+      exec: {command: rm, args: ["-rf", "/opt/verysync"]}
+docker:
+  arches: [aarch64, x86_64]
+  image: jonnyan404/verysync:latest
+  ports: ["8886:8886"]
+  volumes: [/var/lib/verysync:/data]

@@ -1,0 +1,18 @@
+# Build artifacts
+dist/
+web/dist/
+*.exe
+*.gz
+
+# Runtime data (DB, logs, local test data)
+runtime-data/
+
+# Frontend deps
+web/node_modules/
+
+# IDE / tools
+.trae/
+
+# Logs & temp
+*.log
+*.tmp

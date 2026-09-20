@@ -1,0 +1,5 @@
+# 统一使用 LF：项目面向 Linux（armv7）编译，go:embed 原样嵌入 install.sh 等
+* text=auto eol=lf
+*.png binary
+*.jpg binary
+*.ico binary

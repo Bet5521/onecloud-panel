@@ -1,0 +1,16 @@
+api_version: 1
+id: typecho
+name: Typecho
+category: 效率
+icon: feather
+description: 轻量级博客程序，安装向导支持 SQLite（无需外部数据库）。
+homepage: https://github.com/typecho/typecho
+methods: [docker]
+ports:
+  - {port: 8080, proto: tcp, description: Web}
+healthcheck: {type: http, port: 8080, path: /}
+docker:
+  arches: [aarch64, x86_64]
+  image: joyqi/typecho:latest
+  ports: ["8080:80"]
+  volumes: [/var/lib/typecho:/data]

@@ -1,0 +1,17 @@
+api_version: 1
+id: migpt
+name: MiGPT
+category: 网络
+icon: message-circle
+description: 小爱音箱接入大模型，支持 AI 问答、角色扮演与自定义 TTS；无头服务，经配置文件与环境变量运行。
+homepage: https://github.com/idootop/mi-gpt
+methods: [docker]
+config_files:
+  - {path: /var/lib/migpt/.migpt.js, description: MiGPT 配置（容器挂载自宿主机）}
+docker:
+  arches: [aarch64, x86_64]
+  image: idootop/mi-gpt:latest
+  volumes: [/var/lib/migpt/.migpt.js:/app/.migpt.js]
+  install_steps:
+    - name: 建配置目录
+      mkdir: [/var/lib/migpt]

@@ -1,0 +1,54 @@
+api_version: 1
+id: syncthing
+name: Syncthing
+category: 文件
+icon: refresh-cw
+description: 持续的去中心化文件同步，节点间直接加密同步。
+homepage: https://github.com/syncthing/syncthing
+methods: [native, docker]
+ports:
+  - {port: 8384, proto: tcp, description: Web GUI}
+  - {port: 22000, proto: tcp, description: 同步监听}
+  - {port: 22000, proto: udp, description: 发现}
+  - {port: 21027, proto: udp, description: 本地发现}
+variables:
+  - key: version
+    name: 版本
+    type: string
+    default: "2.1.5"
+healthcheck: {type: tcp, port: 8384}
+native:
+  arches: [armv7l, aarch64, x86_64, i386]
+  unit_name: syncthing.service
+  unit_template: |
+    [Unit]
+    Description=Syncthing
+    After=network-online.target
+    Wants=network-online.target
+    [Service]
+    ExecStart=/opt/syncthing/syncthing -no-browser -no-restart -home=/var/lib/syncthing
+    Restart=on-failure
+    RestartSec=5s
+    [Install]
+    WantedBy=multi-user.target
+  install_steps:
+    - name: 建目录
+      mkdir: [/opt/syncthing, /var/lib/syncthing]
+    - name: 下载发布包
+      download:
+        url: https://github.com/syncthing/syncthing/releases/download/v{{.Vars.version}}/syncthing-linux-{{.Node.ArchRel}}-v{{.Vars.version}}.tar.gz
+        dest: /tmp/st.tgz
+    - name: 解压到 /opt/syncthing
+      exec: {command: tar, args: ["--strip-components=1", "-xzf", "/tmp/st.tgz", "-C", "/opt/syncthing"]}
+  uninstall_steps:
+    - name: 删除程序
+      exec: {command: rm, args: ["-rf", "/opt/syncthing"]}
+docker:
+  arches: [armv7l, aarch64, x86_64, i386]
+  image: syncthing/syncthing:latest
+  ports:
+    - "8384:8384/tcp"
+    - "22000:22000/tcp"
+    - "22000:22000/udp"
+    - "21027:21027/udp"
+  volumes: [/var/lib/syncthing:/var/syncthing]

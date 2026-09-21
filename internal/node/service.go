@@ -306,7 +306,7 @@ func (s *Service) RecordSample(nodeID int64, h *system.HostInfo) {
 	if h == nil {
 		return
 	}
-	_, _ = s.store.RecordMetricSample(nodeID, time.Now().Unix(),
+	_ = s.store.RecordMetricSample(nodeID, time.Now().Unix(),
 		h.CPUPercent(), h.MemPercent(), h.DiskPercent(), h.LoadAvg[0])
 }
 

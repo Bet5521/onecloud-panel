@@ -47,7 +47,7 @@ func TestRegisterAndHeartbeat(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	resp, err := Register(ctx, srv.URL, "reg-123", 9000, false)
+	resp, err := Register(ctx, srv.URL, "reg-123", 9000, false, "")
 	if err != nil {
 		t.Fatalf("register: %v", err)
 	}
@@ -56,7 +56,7 @@ func TestRegisterAndHeartbeat(t *testing.T) {
 	}
 
 	// 错误注册令牌
-	_, err = Register(ctx, srv.URL, "wrong", 9000, false)
+	_, err = Register(ctx, srv.URL, "wrong", 9000, false, "")
 	if err == nil {
 		t.Fatal("错误注册令牌不应成功")
 	}

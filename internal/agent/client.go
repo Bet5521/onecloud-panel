@@ -128,8 +128,10 @@ func normalizePin(pin string) string {
 	return p
 }
 
-// matchPin 判定证书链中任一证书的指纹（SHA256 十六进制）是否等于归一化后的期望指纹。
-func matchPin(rawCerts [][]byte, normalizedPin string) bool {
+// matchPin 判定证书链中任一证书的指纹（SHA256 十六进制）是否等于期望指纹。
+// 期望指纹先经 normalizePin 归一化，容错 sha256: 前缀、空白与大小写。
+func matchPin(rawCerts [][]byte, pin string) bool {
+	normalizedPin := normalizePin(pin)
 	if normalizedPin == "" {
 		return false
 	}

@@ -24,18 +24,18 @@ func TestSSHInstallValidation(t *testing.T) {
 		want string
 	}{
 		{"缺主机", map[string]any{"user": "root", "password": "p"}, "必填"},
-		{"缺用户名", map[string]any{"host": "192.168.6.50", "password": "p"}, "必填"},
-		{"端口越界", map[string]any{"host": "192.168.6.50", "user": "root",
+		{"缺用户名", map[string]any{"host": "192.168.1.50", "password": "p"}, "必填"},
+		{"端口越界", map[string]any{"host": "192.168.1.50", "user": "root",
 			"port": 70000, "password": "p"}, "端口非法"},
-		{"缺密码", map[string]any{"host": "192.168.6.50", "user": "root",
+		{"缺密码", map[string]any{"host": "192.168.1.50", "user": "root",
 			"auth_mode": "password"}, "SSH 密码"},
-		{"缺私钥", map[string]any{"host": "192.168.6.50", "user": "root",
+		{"缺私钥", map[string]any{"host": "192.168.1.50", "user": "root",
 			"auth_mode": "key"}, "私钥"},
-		{"认证方式非法", map[string]any{"host": "192.168.6.50", "user": "root",
+		{"认证方式非法", map[string]any{"host": "192.168.1.50", "user": "root",
 			"auth_mode": "agent", "password": "p"}, "password/key"},
-		{"指纹策略非法", map[string]any{"host": "192.168.6.50", "user": "root",
+		{"指纹策略非法", map[string]any{"host": "192.168.1.50", "user": "root",
 			"password": "p", "host_key_policy": "loose"}, "pin/strict"},
-		{"接入类型非法", map[string]any{"host": "192.168.6.50", "user": "root",
+		{"接入类型非法", map[string]any{"host": "192.168.1.50", "user": "root",
 			"password": "p", "network_type": "unknown"}, "接入类型"},
 	}
 	for _, c := range cases {
@@ -56,7 +56,7 @@ func TestSSHInstallEnqueuesEncryptedTask(t *testing.T) {
 
 	const password = "SuperSecretPw"
 	w := do(t, h, "POST", "/api/nodes/ssh-install", map[string]any{
-		"host": "192.168.6.50", "port": 2222, "user": "root",
+		"host": "192.168.1.50", "port": 2222, "user": "root",
 		"auth_mode": "password", "password": password,
 		"name": "测试机", "network_type": "lan",
 	}, jar)
@@ -94,7 +94,7 @@ func TestSSHInstallEnqueuesEncryptedTask(t *testing.T) {
 		}
 	}
 	// 主机与用户名可明文（便于排查），但仅为元信息
-	if !strings.Contains(task.Payload, "192.168.6.50") {
+	if !strings.Contains(task.Payload, "192.168.1.50") {
 		t.Fatalf("payload 缺少主机元信息: %s", task.Payload)
 	}
 	if _, err := s.RegistrationTokenByID(resp.TokenID); err != nil {
@@ -108,7 +108,7 @@ func TestSSHInstallProgressEndpoint(t *testing.T) {
 	jar := adminLogin(t, h)
 
 	w := do(t, h, "POST", "/api/nodes/ssh-install", map[string]any{
-		"host": "192.168.6.51", "user": "root", "password": "pw",
+		"host": "192.168.1.51", "user": "root", "password": "pw",
 	}, jar)
 	var resp struct {
 		TaskID int64 `json:"task_id"`
@@ -163,7 +163,7 @@ func TestSSHInstallRequiresNodeWrite(t *testing.T) {
 	}
 
 	w := do(t, h, "POST", "/api/nodes/ssh-install", map[string]any{
-		"host": "192.168.6.52", "user": "root", "password": "pw",
+		"host": "192.168.1.52", "user": "root", "password": "pw",
 	}, jar)
 	if w.Code != http.StatusForbidden {
 		t.Fatalf("viewer ssh-install code = %d, want 403", w.Code)
@@ -185,7 +185,7 @@ func TestSSHInstallReconcile(t *testing.T) {
 	if raw == "" || tokID == 0 {
 		t.Fatal("令牌创建异常")
 	}
-	payload, err := json.Marshal(sshInstallPayload{Host: "192.168.6.53", TokenID: tokID})
+	payload, err := json.Marshal(sshInstallPayload{Host: "192.168.1.53", TokenID: tokID})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -235,12 +235,12 @@ func TestBuildInstallCommand(t *testing.T) {
 	_, _, apiObj := newTestAPI(t)
 
 	req := httptest.NewRequest("POST", "/api/nodes/ssh-install", nil)
-	req.Host = "192.168.6.194:8080"
+	req.Host = "192.168.1.194:8080"
 	got := apiObj.buildInstallCommand(req, "RAWTOKEN")
 	for _, want := range []string{
-		"http://192.168.6.194:8080/install.sh",
+		"http://192.168.1.194:8080/install.sh",
 		"bash -s -- agent",
-		"--server http://192.168.6.194:8080",
+		"--server http://192.168.1.194:8080",
 		"--register-token RAWTOKEN",
 	} {
 		if !strings.Contains(got, want) {
@@ -257,7 +257,7 @@ func TestSanitizeHost(t *testing.T) {
 			t.Fatalf("sanitizeHost 未过滤 %q: %q", bad, got)
 		}
 	}
-	if got := sanitizeHost("192.168.6.194:8080"); got != "192.168.6.194:8080" {
+	if got := sanitizeHost("192.168.1.194:8080"); got != "192.168.1.194:8080" {
 		t.Fatalf("合法 Host 被改写: %q", got)
 	}
 	if got := sanitizeHost("[fe80::1]:8080"); got != "[fe80::1]:8080" {

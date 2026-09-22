@@ -20,7 +20,7 @@ func TestTLSSettingsSelfSigned(t *testing.T) {
 	w := do(t, h, "POST", "/api/settings/tls", map[string]any{
 		"enabled":     true,
 		"mode":        "selfsigned",
-		"hosts":       "panel.local, 192.168.6.194",
+		"hosts":       "panel.local, 192.168.1.194",
 		"force_https": true,
 	}, admin)
 	if w.Code != http.StatusOK {
@@ -36,7 +36,7 @@ func TestTLSSettingsSelfSigned(t *testing.T) {
 	cases := map[string]string{
 		"tls_enabled":     "1",
 		"tls_mode":        "selfsigned",
-		"tls_hosts":       "panel.local,192.168.6.194",
+		"tls_hosts":       "panel.local,192.168.1.194",
 		"tls_force_https": "1",
 	}
 	for k, want := range cases {

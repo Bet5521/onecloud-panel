@@ -187,7 +187,7 @@ func TestSuggestNetworkTypeNoUnknown(t *testing.T) {
 
 	cases := map[string]string{
 		"8.8.8.8:9000":      "public",
-		"192.168.6.20:9000": "lan",
+		"192.168.1.20:9000": "lan",
 		"not-an-ip:9000":    "lan",
 		"":                  "lan",
 	}

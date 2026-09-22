@@ -19,33 +19,33 @@ func TestSSHNoRegisterHint(t *testing.T) {
 	now := time.Now().Unix()
 	if _, err := s.CreateNode(&store.Node{
 		Name: "玩客云-200", Mode: "remote", Status: "active",
-		NetworkType: "lan", Address: "192.168.6.200:9000",
+		NetworkType: "lan", Address: "192.168.1.200:9000",
 		CreatedAt: now, UpdatedAt: now,
 	}); err != nil {
 		t.Fatalf("CreateNode: %v", err)
 	}
 
 	// 按「地址主机部分」匹配（忽略端口差异）
-	hit := a.nodeByAddrHost("192.168.6.200")
+	hit := a.nodeByAddrHost("192.168.1.200")
 	if hit == nil {
 		t.Fatal("应按地址主机匹配到既有节点")
 	}
 	if hit.Name != "玩客云-200" {
 		t.Fatalf("匹配到错误节点: %+v", hit)
 	}
-	if a.nodeByAddrHost("192.168.6.201") != nil {
+	if a.nodeByAddrHost("192.168.1.201") != nil {
 		t.Fatal("不同主机不应匹配")
 	}
 	if a.nodeByAddrHost("") != nil {
 		t.Fatal("空主机不应匹配")
 	}
 
-	hint := a.noRegisterHint("192.168.6.200")
+	hint := a.noRegisterHint("192.168.1.200")
 	if !strings.Contains(hint, "玩客云-200") || !strings.Contains(hint, agentStatePath) {
 		t.Fatalf("命中既有节点时须含节点名与身份文件路径: %s", hint)
 	}
 
-	other := a.noRegisterHint("192.168.6.201")
+	other := a.noRegisterHint("192.168.1.201")
 	if !strings.Contains(other, agentStatePath) {
 		t.Fatalf("未命中时也须提示清理身份文件: %s", other)
 	}
@@ -67,7 +67,7 @@ func TestSSHInstallRejectsManagedHost(t *testing.T) {
 	now := time.Now().Unix()
 	nodeID, err := s.CreateNode(&store.Node{
 		Name: "玩客云-200", Mode: "remote", Status: "active",
-		NetworkType: "lan", Address: "192.168.6.200:9000",
+		NetworkType: "lan", Address: "192.168.1.200:9000",
 		CreatedAt: now, UpdatedAt: now,
 	})
 	if err != nil {
@@ -76,7 +76,7 @@ func TestSSHInstallRejectsManagedHost(t *testing.T) {
 
 	// 同一主机的不同书写（agent 端口与 SSH 端口不同）也应命中
 	w := do(t, h, "POST", "/api/nodes/ssh-install", map[string]any{
-		"host": "192.168.6.200", "user": "root", "password": "x",
+		"host": "192.168.1.200", "user": "root", "password": "x",
 	}, jar)
 	if w.Code != http.StatusConflict {
 		t.Fatalf("已纳管主机应 409, got %d body=%s", w.Code, w.Body.String())
@@ -92,7 +92,7 @@ func TestSSHInstallRejectsManagedHost(t *testing.T) {
 
 	// 未纳管主机放行并正常入队
 	w = do(t, h, "POST", "/api/nodes/ssh-install", map[string]any{
-		"host": "192.168.6.201", "user": "root", "password": "x",
+		"host": "192.168.1.201", "user": "root", "password": "x",
 	}, jar)
 	if w.Code != http.StatusOK {
 		t.Fatalf("未纳管主机应放行, got %d body=%s", w.Code, w.Body.String())

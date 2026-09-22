@@ -291,7 +291,7 @@ func TestSuggestNetwork(t *testing.T) {
 	if got := svc.SuggestNetworkType("not-an-ip:9000"); got != "lan" {
 		t.Fatalf("非法地址建议 = %q, want lan", got)
 	}
-	if got := svc.SuggestNetworkType("192.168.6.20:9000"); got != "lan" {
+	if got := svc.SuggestNetworkType("192.168.1.20:9000"); got != "lan" {
 		t.Fatalf("私网地址建议 = %q, want lan", got)
 	}
 }

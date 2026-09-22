@@ -110,7 +110,7 @@ POST /api/registration-tokens
 {"description":"客厅玩客云","expires_at":1799999999,"max_uses":1}
 → {"token":"<明文仅此次返回>", ...}
 
-GET /api/network-suggest?address=192.168.6.20:9000
+GET /api/network-suggest?address=192.168.1.20:9000
 → {"network_type":"lan"}
 # 取值：lan（内网/回环）/ public（公网）/ wireguard（命中 WG 网段）/ local（面板本机）
 # 添加/编辑节点时默认自动识别，可手动修改；节点级 docker_mirrors、
@@ -120,7 +120,7 @@ GET /api/network-suggest?address=192.168.6.20:9000
 # 再把该节点写入并置为 active。凭据（密码/私钥/安装命令）加密后随任务 payload 流转，
 # 任务终态后 payload 立即清空；进度接口不回传 payload。
 POST /api/nodes/ssh-install
-{"host":"192.168.6.30","port":22,"user":"root","auth_mode":"password",
+{"host":"192.168.1.30","port":22,"user":"root","auth_mode":"password",
  "password":"<SSH 密码>","host_key_policy":"pin","host_key_fingerprint":"",
  "name":"客厅玩客云","network_type":""}
 → 200 {"task_id":31,"token_id":7}

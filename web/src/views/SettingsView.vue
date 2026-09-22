@@ -62,7 +62,7 @@
                 <el-form-item label="证书域名">
                   <el-input v-model="tls.hosts" type="textarea" :rows="2"
                     :disabled="!can('settings:write')"
-                    placeholder="附加域名/IP，逗号分隔；留空自动收集 hostname 与本机全部 IP，如：panel.local,192.168.6.194" />
+                    placeholder="附加域名/IP，逗号分隔；留空自动收集 hostname 与本机全部 IP，如：panel.local,192.168.1.194" />
                   <span class="hint">证书 SAN 始终自动包含 localhost、主机名与本机 IP，此处仅附加额外名称</span>
                 </el-form-item>
               </template>

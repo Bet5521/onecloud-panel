@@ -233,6 +233,8 @@ async function onCommand(command) {
     } catch {
       // 即使接口失败也清除本地会话
     }
+    // 主动登出不是会话过期，先清掉标记，避免登录页误报「登录状态已过期」
+    session.expired = false
     session.clear()
     ElMessage.success('已退出登录')
     router.replace({ name: 'login' })

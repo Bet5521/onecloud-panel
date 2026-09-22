@@ -1,5 +1,12 @@
 <template>
   <div v-loading="loading">
+    <!-- 加载失败必须显式说明：否则界面只剩一排 '—' 或空列表，
+         用户无法区分「加载失败」与「集群确实是空的」。 -->
+    <el-alert v-if="loadFailed" type="error" show-icon :closable="false" style="margin-bottom: 14px"
+      title="仪表盘数据加载失败，以下内容可能不完整或已过期">
+      <el-button text type="primary" @click="load">重试</el-button>
+    </el-alert>
+
     <!-- 统计卡片 -->
     <el-row :gutter="14">
       <el-col :xs="12" :sm="8" v-for="c in cards" :key="c.label" style="margin-bottom: 14px">
@@ -62,7 +69,7 @@
           </div>
         </el-col>
       </el-row>
-      <div v-if="nodes.length === 0" class="muted">暂无节点</div>
+      <div v-if="showEmpty(nodes)" class="muted">暂无节点</div>
     </el-card>
 
     <el-row :gutter="14" style="margin-top: 14px">
@@ -77,7 +84,7 @@
               <span v-if="t.app_id" class="muted"> · {{ t.app_id }}</span>
             </el-timeline-item>
           </el-timeline>
-          <div v-if="recentTasks.length === 0" class="muted">暂无后台任务</div>
+          <div v-if="showEmpty(recentTasks)" class="muted">暂无后台任务</div>
         </el-card>
       </el-col>
 
@@ -107,7 +114,7 @@
               <template #default="{ row }">{{ fmtTime(row.Ts) }}</template>
             </el-table-column>
           </el-table>
-          <div v-if="recentAudits.length === 0" class="muted">暂无审计事件</div>
+          <div v-if="showEmpty(recentAudits)" class="muted">暂无审计事件</div>
         </el-card>
       </el-col>
     </el-row>
@@ -121,19 +128,30 @@ import { get, showErr } from '../api/http'
 import { fmtTime, fmtBytes } from '../utils'
 
 const loading = ref(true)
-const stats = ref({})
-const appStats = ref({ total: 0, running: 0, error: 0, stopped: 0 })
+// 统计数据用 null 表示「尚未就绪」。绝不能默认成 0 ——
+// 那会让「还没加载完（或加载失败）」与「集群真的是 0 个节点」在界面上完全一样，
+// 排查时极具误导性（曾出现过首屏「0 个节点总数」的假象）。
+const stats = ref(null)
+const appStats = ref(null)
 const recentAudits = ref([])
 const recentTasks = ref([])
 const nodes = ref([])
+// loaded：已成功加载过一次；loadFailed：本次刷新失败（保留上次数据）。
+const loaded = ref(false)
+const loadFailed = ref(false)
+
+const UNKNOWN = '—'
+const num = (v) => (v === null || v === undefined ? UNKNOWN : v)
+// 只有「已成功加载且确实为空」才显示「暂无…」；否则由 loading/错误条说明状态。
+const showEmpty = (list) => loaded.value && !loadFailed.value && list.length === 0
 
 const cards = computed(() => [
-  { label: '节点总数', value: stats.value.nodes_total ?? 0, color: '#409eff' },
-  { label: '在线节点', value: stats.value.nodes_online ?? 0, color: '#67c23a' },
-  { label: '应用总数', value: appStats.value.total ?? 0, color: '#e6a23c' },
-  { label: '应用运行中', value: appStats.value.running ?? 0, color: '#67c23a' },
-  { label: '应用异常', value: appStats.value.error ?? 0, color: (appStats.value.error ?? 0) > 0 ? '#f56c6c' : '#67c23a' },
-  { label: 'Docker 节点', value: stats.value.docker ?? 0, color: '#909399' }
+  { label: '节点总数', value: num(stats.value?.nodes_total), color: '#409eff' },
+  { label: '在线节点', value: num(stats.value?.nodes_online), color: '#67c23a' },
+  { label: '应用总数', value: num(appStats.value?.total), color: '#e6a23c' },
+  { label: '应用运行中', value: num(appStats.value?.running), color: '#67c23a' },
+  { label: '应用异常', value: num(appStats.value?.error), color: (appStats.value?.error ?? 0) > 0 ? '#f56c6c' : '#67c23a' },
+  { label: 'Docker 节点', value: num(stats.value?.docker), color: '#909399' }
 ])
 
 const networkLabels = {
@@ -168,6 +186,7 @@ function fmtUptime(s) {
 
 async function load() {
   loading.value = true
+  loadFailed.value = false
   try {
     const d = await get('/api/dashboard/summary')
     stats.value = d.stats ?? {}
@@ -175,7 +194,10 @@ async function load() {
     recentAudits.value = d.recent_audits ?? []
     recentTasks.value = d.recent_tasks ?? []
     nodes.value = d.nodes ?? []
+    loaded.value = true
   } catch (e) {
+    // 保留上一次成功的快照：刷新失败时把界面清空比留着旧数据更糟。
+    loadFailed.value = true
     showErr(e, '仪表盘加载失败')
   } finally {
     loading.value = false

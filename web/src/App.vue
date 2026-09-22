@@ -13,14 +13,16 @@ import { session } from './session'
 
 const router = useRouter()
 
-// 会话失效（401）时跳转登录页
+// 会话失效（401）时跳转登录页。
+// 这里**只负责导航**：expired 标记由 http.js 在真正收到 401 时置位。
+// 原先在此无条件 `session.expired = true`，导致主动「退出登录」也被报成
+// 「登录状态已过期，请重新登录」，与同时弹出的「已退出登录」自相矛盾。
 watch(
   () => session.user,
   (u, old) => {
     if (!u && old) {
       const route = router.currentRoute.value
       if (!route.meta.public) {
-        session.expired = true
         router.push({ name: 'login' })
       }
     }

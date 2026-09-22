@@ -38,12 +38,16 @@ router.beforeEach(async (to) => {
     })
   }
 
-  // 未初始化：只允许向导页
-  if (!session.initialized) {
+  // 未初始化：只允许向导页。
+  // 严格判 === false：initialized 为 null 表示「状态未知」（/api/system/status
+  // 探测失败）。此时把用户按「未初始化」处理，会把已初始化的面板整站重定向到
+  // 安装向导 —— 一次网络抖动就够触发。未知时放行，由后续的登录守卫兜底
+  // （无会话 → 登录页），用户重新登录即可恢复正常。
+  if (session.initialized === false) {
     return to.name === 'setup' ? true : { name: 'setup' }
   }
   // 已初始化：向导页不再可访问
-  if (to.name === 'setup') return { name: 'dashboard' }
+  if (session.initialized === true && to.name === 'setup') return { name: 'dashboard' }
 
   // 公开页（登录）
   if (to.meta.public) {

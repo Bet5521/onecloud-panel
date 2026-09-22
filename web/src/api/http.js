@@ -23,8 +23,12 @@ export async function request(method, url, body) {
   }
 
   if (resp.status === 401 && !url.endsWith('/auth/login')) {
+    // 只有「本来已登录」才叫会话过期。启动时的 /api/auth/me 探测同样返回
+    // 401（还没登录），若一律置 expired，首次访问的用户会看到
+    // 「登录状态已过期」这种莫名其妙的话。
+    const wasLoggedIn = !!session.user
     session.clear()
-    session.expired = true
+    if (wasLoggedIn) session.expired = true
     // 会话失效必须抛错。早先这里 return null，调用方随后在 d.items 上抛
     // 语义不明的 TypeError，把「登录过期」掩盖成「前端 bug」。
     // 跳转由 App.vue 监听 session.user 变为 null 完成，不依赖返回值。

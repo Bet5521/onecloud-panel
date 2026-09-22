@@ -26,9 +26,13 @@ type HeartbeatRequest struct {
 }
 
 // HeartbeatResponse 心跳应答；RotateToken 非空时 Agent 切换 Token。
+//
+// NodeID 让 Agent 在无本地身份时（install.sh 的 --token 重装路径）也能确认
+// 自身节点编号，避免启动日志与首次心跳前显示「节点 0」。
 type HeartbeatResponse struct {
 	OK          bool   `json:"ok"`
 	RotateToken string `json:"rotate_token,omitempty"`
+	NodeID      int64  `json:"node_id,omitempty"`
 }
 
 // ---- 节点操作（Panel → Agent） ----

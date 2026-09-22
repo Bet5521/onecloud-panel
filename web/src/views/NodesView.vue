@@ -359,6 +359,8 @@ async function load() {
     if (fOnline.value) q.set('online', fOnline.value)
     const d = await get('/api/nodes' + (q.toString() ? '?' + q : ''))
     nodes.value = d.items
+  } catch (e) {
+    ElMessage.error(e.message || '节点列表加载失败')
   } finally {
     loading.value = false
   }
@@ -464,6 +466,8 @@ async function installDocker(n) {
     taskEndpoint.value = '/api/tasks/'
     taskTitle.value = '任务执行中'
     taskId.value = d.task_id
+  } catch (e) {
+    ElMessage.error(e.message || 'Docker 安装任务创建失败')
   } finally {
     dockerInstalling.value = false
   }
@@ -482,6 +486,8 @@ async function applyNodeDocker() {
   try {
     const d = await post('/api/nodes/' + cur.value.id + '/docker/apply-config', {})
     ElMessage.success('已入队应用配置，任务 ID: ' + d.task_id)
+  } catch (e) {
+    ElMessage.error(e.message || '应用 Docker 配置失败')
   } finally {
     dockerApplying.value = false
   }
@@ -513,6 +519,8 @@ async function createToken() {
       description: tokDesc.value, ttl_hours: tokTTL.value, max_uses: 1
     })
     installCmd.value = d.install_command
+  } catch (e) {
+    ElMessage.error(e.message || '注册令牌生成失败')
   } finally {
     tokCreating.value = false
   }
@@ -578,6 +586,10 @@ async function submitSSH() {
     taskTitle.value = '节点 SSH 安装进度'
     addVisible.value = false
     taskId.value = d.task_id
+  } catch (e) {
+    // 业务拒绝（如 409 目标主机已纳管）时保留对话框与已填内容，交由用户处置。
+    // 该错误信息较长，用可关闭的提示避免被截断。
+    ElMessage.error({ message: e.message || 'SSH 纳管任务创建失败', duration: 8000, showClose: true })
   } finally {
     sshSubmitting.value = false
   }

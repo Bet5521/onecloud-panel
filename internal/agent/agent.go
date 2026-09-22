@@ -74,8 +74,8 @@ func Run(cfg *config.Agent) error {
 		_ = srv.Shutdown(shCtx)
 	}()
 
-	log.Printf("%s Agent 启动，监听 %s，面板 %s，节点 %d",
-		version.Print(), cfg.Listen, state.Server, state.NodeID)
+	log.Printf("%s Agent 启动，监听 %s，面板 %s，%s",
+		version.Print(), cfg.Listen, state.Server, nodeLabel(state.NodeID))
 	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}
@@ -126,6 +126,15 @@ func heartbeatLoop(ctx context.Context, dataDir string, state *State, holder *to
 				log.Println("Agent Token 已轮换")
 			}
 		}
+		// 面板回传权威节点编号：仅有 Token 的路径（install.sh --token）本地
+		// 没有 agent.json，编号只能由心跳确认，否则日志长期显示「节点 0」。
+		if changed, first := syncNodeID(state, resp.NodeID); changed {
+			if err := saveState(dataDir, state); err != nil {
+				log.Printf("节点编号落盘失败: %v", err)
+			} else if first {
+				log.Printf("节点身份已确认：节点 #%d", state.NodeID)
+			}
+		}
 	}
 	beat()
 	ticker := time.NewTicker(heartbeatInterval)
@@ -147,6 +156,28 @@ func applyConfigToken(state *State, token string) {
 	if state.Token == "" && token != "" {
 		state.Token = token
 	}
+}
+
+// syncNodeID 用面板回传的权威节点编号更新本地身份。
+// changed 表示编号发生变化（调用方据此落盘）；first 表示此前编号未知
+// （即仅有 --token、从未注册过的机器首次由心跳确认身份）。
+// 面板未回传编号（node_id 缺省为 0，如旧版面板）时保持本地值不动。
+func syncNodeID(state *State, nodeID int64) (changed, first bool) {
+	if nodeID <= 0 || nodeID == state.NodeID {
+		return false, false
+	}
+	first = state.NodeID <= 0
+	state.NodeID = nodeID
+	return true, first
+}
+
+// nodeLabel 节点编号的可读文案。编号未知时（仅有 --token、尚未收到首次
+// 心跳应答）给出明确说明，而不是误导性的「节点 0」。
+func nodeLabel(id int64) string {
+	if id <= 0 {
+		return "节点编号待心跳确认"
+	}
+	return "节点 #" + strconv.FormatInt(id, 10)
 }
 
 func listenPort(listen string) int {

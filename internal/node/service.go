@@ -177,24 +177,24 @@ func (s *Service) OpenSecret(encoded string) (string, error) {
 
 // ---- 心跳 ----
 
-// Heartbeat 处理节点心跳。
-func (s *Service) Heartbeat(req *agent.HeartbeatRequest) error {
+// Heartbeat 处理节点心跳，返回命中的节点（供面板向 Agent 回传节点编号）。
+func (s *Service) Heartbeat(req *agent.HeartbeatRequest) (*store.Node, error) {
 	n, err := s.store.GetNodeByTokenHash(hash(req.Token))
 	if err != nil {
-		return errors.New("节点 Token 无效")
+		return nil, errors.New("节点 Token 无效")
 	}
 	if req.Host != nil {
 		applyHost(n, req.Host)
 		n.DockerVersion = req.DockerVersion
 		n.LastSeen = time.Now().Unix()
 		if err := s.store.UpdateNodeInfo(n.ID, n); err != nil {
-			return err
+			return nil, err
 		}
 		if n.Status == "pending" {
 			// 心跳即证明存活；保持 pending 等管理员确认时改 active 由确认接口处理
 		}
 	}
-	return nil
+	return n, nil
 }
 
 // ---- 节点操作 ----

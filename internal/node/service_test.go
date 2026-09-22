@@ -72,10 +72,14 @@ func TestRegisterWithHostInfoAndHeartbeat(t *testing.T) {
 		t.Fatalf("name=%q arch=%q", n.Name, n.Arch)
 	}
 
-	// 心跳更新
+	// 心跳更新：须回传命中的节点，供面板向 Agent 确认节点编号
 	time.Sleep(time.Second)
-	if err := svc.Heartbeat(&agent.HeartbeatRequest{Token: token, Host: host}); err != nil {
+	beat, err := svc.Heartbeat(&agent.HeartbeatRequest{Token: token, Host: host})
+	if err != nil {
 		t.Fatal(err)
+	}
+	if beat == nil || beat.ID != id {
+		t.Fatalf("心跳应回传命中节点: got %+v, want id=%d", beat, id)
 	}
 	n2, _ := svc.Get(id)
 	if !IsOnline(n2.LastSeen) {
@@ -83,7 +87,7 @@ func TestRegisterWithHostInfoAndHeartbeat(t *testing.T) {
 	}
 
 	// 错误 Token
-	if err := svc.Heartbeat(&agent.HeartbeatRequest{Token: "bad"}); err == nil {
+	if _, err := svc.Heartbeat(&agent.HeartbeatRequest{Token: "bad"}); err == nil {
 		t.Fatal("错误 Token 心跳应失败")
 	}
 }

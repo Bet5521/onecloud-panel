@@ -79,11 +79,13 @@ func (a *API) agentHeartbeat(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "请求格式错误")
 		return
 	}
-	if err := a.nodes.Heartbeat(&req); err != nil {
+	n, err := a.nodes.Heartbeat(&req)
+	if err != nil {
 		writeError(w, http.StatusUnauthorized, err.Error())
 		return
 	}
-	writeJSON(w, &agent.HeartbeatResponse{OK: true})
+	// 回传节点编号：Agent 仅有 Token（无本地 agent.json）时据此确认自身身份
+	writeJSON(w, &agent.HeartbeatResponse{OK: true, NodeID: n.ID})
 }
 
 // ---- 节点列表/详情 ----

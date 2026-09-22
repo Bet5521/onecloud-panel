@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -256,5 +257,56 @@ func TestRunAcceptsConfigTokenWithoutState(t *testing.T) {
 		Listen:  "127.0.0.1:0",
 	}); err == nil {
 		t.Fatal("既无本地身份又无 Token 时应报错")
+	}
+}
+
+// 心跳应答须携带节点编号：仅有 --token（无 agent.json）的机器靠它确认身份。
+func TestHeartbeatParsesNodeID(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc(pathHeartbeat, func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(&HeartbeatResponse{OK: true, NodeID: 12})
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	resp, err := Heartbeat(ctx, srv.URL, "tok", nil, false)
+	if err != nil {
+		t.Fatalf("heartbeat: %v", err)
+	}
+	if resp.NodeID != 12 {
+		t.Fatalf("心跳应答应解析节点编号, got %d", resp.NodeID)
+	}
+}
+
+// 心跳回传编号 → 本地身份同步；编号未知时的日志文案不得显示「节点 0」。
+func TestSyncNodeIDFromHeartbeat(t *testing.T) {
+	// 首次确认：编号从「未知」补全
+	s := &State{Token: "t"}
+	changed, first := syncNodeID(s, 7)
+	if !changed || !first || s.NodeID != 7 {
+		t.Fatalf("首次确认应写入编号: changed=%v first=%v id=%d", changed, first, s.NodeID)
+	}
+	// 幂等：编号未变不触发落盘
+	if changed, _ := syncNodeID(s, 7); changed {
+		t.Fatal("编号未变不应触发落盘")
+	}
+	// 面板侧编号变更（节点被删后重新纳管）以面板为准，但不属于「首次确认」
+	changed, first = syncNodeID(s, 9)
+	if !changed || first || s.NodeID != 9 {
+		t.Fatalf("编号变更应更新且非首次: changed=%v first=%v id=%d", changed, first, s.NodeID)
+	}
+	// 旧面板不回传 node_id（0）时不得把本地编号清零
+	if changed, _ := syncNodeID(s, 0); changed || s.NodeID != 9 {
+		t.Fatalf("零值不应覆盖本地编号: changed=%v id=%d", changed, s.NodeID)
+	}
+
+	// 文案：未知编号给明确说明，已知编号给「节点 #N」
+	if got := nodeLabel(0); !strings.Contains(got, "待心跳确认") || strings.Contains(got, "节点 0") {
+		t.Fatalf("未知编号文案不符: %q", got)
+	}
+	if got := nodeLabel(3); got != "节点 #3" {
+		t.Fatalf("已知编号文案不符: %q", got)
 	}
 }

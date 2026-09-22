@@ -126,6 +126,21 @@ func (a *API) sshInstallNode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// 入队前预检：目标主机已纳管时直接拒绝。
+	// 同一主机不会注册为新节点，若放行则要白跑数分钟 SSH 安装 + 等待超时才失败。
+	if existing := a.nodeByAddrHost(req.Host); existing != nil {
+		a.audit.Record(r, "node", "ssh_install_rejected", "node",
+			strconv.FormatInt(existing.ID, 10), audit.ResultFailure,
+			audit.DetailJSON(map[string]any{
+				"host": req.Host, "reason": "already_managed", "node_name": existing.Name,
+			}))
+		writeError(w, http.StatusConflict, fmt.Sprintf(
+			"目标主机 %s 已纳管为节点 #%d（%s）。同一主机不会重复注册为新节点；"+
+				"如需重新纳管，请先在节点列表删除该节点，并在目标机删除 %s 后重试",
+			req.Host, existing.ID, existing.Name, agentStatePath))
+		return
+	}
+
 	uid := auth.FromContext(r.Context()).User.ID
 	rawToken, tokenID, err := a.nodes.CreateToken(
 		"SSH 添加："+req.Host, time.Hour, 1, &uid)

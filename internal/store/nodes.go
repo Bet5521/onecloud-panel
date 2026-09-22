@@ -14,12 +14,13 @@ func (s *Store) CreateNode(n *Node) (int64, error) {
 		`INSERT INTO nodes
 		 (name, mode, status, network_type, address, alt_address, agent_token_hash,
 		  hostname, os_name, os_version, kernel, arch, cpu_cores, mem_total, docker_version,
-		  docker_mirrors, docker_insecure_registries, last_seen, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		  docker_mirrors, docker_insecure_registries, last_seen, owner_user_id, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		n.Name, n.Mode, n.Status, n.NetworkType, n.Address, n.AltAddress,
 		n.AgentTokenHash, n.Hostname, n.OSName, n.OSVersion, n.Kernel, n.Arch,
 		n.CPUCores, n.MemTotal, n.DockerVersion,
-		n.DockerMirrors, n.DockerInsecureRegistries, n.LastSeen, n.CreatedAt, n.UpdatedAt)
+		n.DockerMirrors, n.DockerInsecureRegistries, n.LastSeen, n.OwnerUserID,
+		n.CreatedAt, n.UpdatedAt)
 	if err != nil {
 		return 0, err
 	}
@@ -41,13 +42,59 @@ func (s *Store) ListNodes() ([]Node, error) {
 	rows, err := s.DB.Query(
 		`SELECT id, name, mode, status, network_type, address, alt_address, agent_token_hash,
 		        hostname, os_name, os_version, kernel, arch, cpu_cores, mem_total, docker_version,
-		        docker_mirrors, docker_insecure_registries, last_seen, created_at, updated_at
+		        docker_mirrors, docker_insecure_registries, last_seen, owner_user_id, created_at, updated_at
 		 FROM nodes ORDER BY (mode = 'local') DESC, id ASC`)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	return scanNodes(rows)
+}
+
+// NodeListFilter 节点可见性过滤。
+type NodeListFilter struct {
+	// OwnerUserID 非 nil 时仅返回该用户添加的节点。
+	OwnerUserID *int64
+	// IncludeSystem 是否包含 owner_user_id IS NULL 的系统节点（如 local）。
+	IncludeSystem bool
+}
+
+// ListNodesFiltered 按归属过滤节点；用于非管理员只能看自己添加的节点。
+func (s *Store) ListNodesFiltered(f NodeListFilter) ([]Node, error) {
+	q := `SELECT id, name, mode, status, network_type, address, alt_address, agent_token_hash,
+		        hostname, os_name, os_version, kernel, arch, cpu_cores, mem_total, docker_version,
+		        docker_mirrors, docker_insecure_registries, last_seen, owner_user_id, created_at, updated_at
+		  FROM nodes`
+	var conds []string
+	var args []any
+	if f.OwnerUserID != nil {
+		conds = append(conds, "owner_user_id = ?")
+		args = append(args, *f.OwnerUserID)
+	}
+	if !f.IncludeSystem {
+		conds = append(conds, "owner_user_id IS NOT NULL")
+	}
+	if len(conds) > 0 {
+		q += " WHERE " + joinAnd(conds)
+	}
+	q += " ORDER BY (mode = 'local') DESC, id ASC"
+	rows, err := s.DB.Query(q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanNodes(rows)
+}
+
+func joinAnd(conds []string) string {
+	out := ""
+	for i, c := range conds {
+		if i > 0 {
+			out += " AND "
+		}
+		out += c
+	}
+	return out
 }
 
 // UpdateNodeConfirm 确认/编辑节点基本信息。
@@ -121,19 +168,25 @@ func (s *Store) DeleteNode(id int64) error {
 func (s *Store) node(where string, args ...any) (*Node, error) {
 	q := `SELECT id, name, mode, status, network_type, address, alt_address, agent_token_hash,
 	             hostname, os_name, os_version, kernel, arch, cpu_cores, mem_total, docker_version,
-	             docker_mirrors, docker_insecure_registries, last_seen, created_at, updated_at
+	             docker_mirrors, docker_insecure_registries, last_seen, owner_user_id, created_at, updated_at
 	      FROM nodes ` + where
 	n := &Node{}
+	var owner sql.NullInt64
 	err := s.DB.QueryRow(q, args...).Scan(
 		&n.ID, &n.Name, &n.Mode, &n.Status, &n.NetworkType, &n.Address, &n.AltAddress,
 		&n.AgentTokenHash, &n.Hostname, &n.OSName, &n.OSVersion, &n.Kernel, &n.Arch,
 		&n.CPUCores, &n.MemTotal, &n.DockerVersion,
-		&n.DockerMirrors, &n.DockerInsecureRegistries, &n.LastSeen, &n.CreatedAt, &n.UpdatedAt)
+		&n.DockerMirrors, &n.DockerInsecureRegistries, &n.LastSeen, &owner,
+		&n.CreatedAt, &n.UpdatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNodeNotFound
 	}
 	if err != nil {
 		return nil, err
+	}
+	if owner.Valid {
+		v := owner.Int64
+		n.OwnerUserID = &v
 	}
 	return n, nil
 }
@@ -148,13 +201,18 @@ func scanNodes(rows *sql.Rows) ([]Node, error) {
 	var out []Node
 	for rows.Next() {
 		var n Node
+		var owner sql.NullInt64
 		if err := rows.Scan(
 			&n.ID, &n.Name, &n.Mode, &n.Status, &n.NetworkType, &n.Address, &n.AltAddress,
 			&n.AgentTokenHash, &n.Hostname, &n.OSName, &n.OSVersion, &n.Kernel, &n.Arch,
 			&n.CPUCores, &n.MemTotal, &n.DockerVersion,
-			&n.DockerMirrors, &n.DockerInsecureRegistries, &n.LastSeen,
+			&n.DockerMirrors, &n.DockerInsecureRegistries, &n.LastSeen, &owner,
 			&n.CreatedAt, &n.UpdatedAt); err != nil {
 			return nil, err
+		}
+		if owner.Valid {
+			v := owner.Int64
+			n.OwnerUserID = &v
 		}
 		out = append(out, n)
 	}

@@ -90,7 +90,7 @@ func TestRegisterWithHostInfoAndHeartbeat(t *testing.T) {
 
 func TestConfirmAndManualAdd(t *testing.T) {
 	svc, _ := newSvc(t)
-	id, err := svc.ManualAdd("手动", "10.8.0.9:9000", "plain-token", "wireguard")
+	id, err := svc.ManualAdd("手动", "10.8.0.9:9000", "plain-token", "wireguard", nil)
 	if err != nil {
 		t.Fatal(err)
 	}

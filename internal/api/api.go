@@ -223,6 +223,20 @@ func (a *API) Handler() http.Handler {
 	mux.Handle("PUT /api/nodes/{id}/apps/{app}/config", a.mw.RequireAuth(
 		auth.RequirePermission(store.PermAppWrite, http.HandlerFunc(a.writeAppConfig))))
 
+	// ---- 自定义应用（CRUD + 二进制上传；生命周期复用上方节点应用路由，app=custom-<id>） ----
+	mux.Handle("GET /api/custom-apps", a.mw.RequireAuth(
+		auth.RequirePermission(store.PermAppRead, http.HandlerFunc(a.listCustomApps))))
+	mux.Handle("POST /api/custom-apps", a.mw.RequireAuth(
+		auth.RequirePermission(store.PermAppWrite, http.HandlerFunc(a.createCustomApp))))
+	mux.Handle("GET /api/custom-apps/{id}", a.mw.RequireAuth(
+		auth.RequirePermission(store.PermAppRead, http.HandlerFunc(a.getCustomApp))))
+	mux.Handle("PUT /api/custom-apps/{id}", a.mw.RequireAuth(
+		auth.RequirePermission(store.PermAppWrite, http.HandlerFunc(a.updateCustomApp))))
+	mux.Handle("DELETE /api/custom-apps/{id}", a.mw.RequireAuth(
+		auth.RequirePermission(store.PermAppWrite, http.HandlerFunc(a.deleteCustomApp))))
+	mux.Handle("POST /api/custom-apps/{id}/binary", a.mw.RequireAuth(
+		auth.RequirePermission(store.PermAppWrite, http.HandlerFunc(a.uploadCustomBinary))))
+
 	// ---- 后台任务 ----
 	mux.Handle("GET /api/tasks", a.mw.RequireAuth(
 		auth.RequirePermission(store.PermAppRead, http.HandlerFunc(a.listTasks))))

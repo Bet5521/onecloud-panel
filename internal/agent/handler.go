@@ -3,12 +3,14 @@ package agent
 import (
 	"context"
 	"crypto/subtle"
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"os"
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"onecloud-panel/internal/executor"
 	"onecloud-panel/internal/system"
@@ -183,7 +185,11 @@ func (s *server) readFile(w http.ResponseWriter, r *http.Request) {
 		agentError(w, http.StatusNotFound, err.Error())
 		return
 	}
-	writeAgentJSON(w, &FileResp{Path: path, Content: string(b)})
+	resp := &FileResp{Path: path, ContentB64: base64.StdEncoding.EncodeToString(b)}
+	if utf8.Valid(b) {
+		resp.Content = string(b)
+	}
+	writeAgentJSON(w, resp)
 }
 
 func (s *server) writeFile(w http.ResponseWriter, r *http.Request) {
@@ -192,7 +198,19 @@ func (s *server) writeFile(w http.ResponseWriter, r *http.Request) {
 		agentError(w, http.StatusBadRequest, "请求格式错误")
 		return
 	}
-	if err := s.exec.WriteFile(req.Path, []byte(req.Content)); err != nil {
+	// 二进制内容优先走 base64（避免 JSON 字符串替换非法 UTF-8 字节导致损坏）。
+	var data []byte
+	if req.ContentB64 != "" {
+		dec, derr := base64.StdEncoding.DecodeString(req.ContentB64)
+		if derr != nil {
+			agentError(w, http.StatusBadRequest, "content_b64 解码失败")
+			return
+		}
+		data = dec
+	} else {
+		data = []byte(req.Content)
+	}
+	if err := s.exec.WriteFile(req.Path, data); err != nil {
 		agentError(w, http.StatusInternalServerError, err.Error())
 		return
 	}

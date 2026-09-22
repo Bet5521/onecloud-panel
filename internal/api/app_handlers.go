@@ -2,9 +2,11 @@ package api
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"path/filepath"
 	"strconv"
+	"strings"
 
 	"onecloud-panel/internal/apps"
 	"onecloud-panel/internal/audit"
@@ -64,6 +66,13 @@ func (a *API) installApp(w http.ResponseWriter, r *http.Request) {
 	if supports, reason := rp.Supports(req.Method, n.Arch); !supports {
 		writeError(w, http.StatusBadRequest, reason)
 		return
+	}
+	// 自定义二进制应用：安装前先把服务端二进制推送到目标节点
+	if strings.HasPrefix(appID, "custom-") {
+		if perr := a.ensureCustomBinaryPushed(r.Context(), io.Discard, nodeID, appID); perr != nil {
+			writeError(w, http.StatusBadRequest, "二进制推送失败: "+perr.Error())
+			return
+		}
 	}
 	// 变量类型/字符集前置校验（防注入）
 	if err := a.apps.ValidateInstallVars(appID, req.Vars); err != nil {

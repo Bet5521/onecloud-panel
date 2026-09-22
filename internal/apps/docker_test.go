@@ -166,13 +166,17 @@ func TestInstallDockerUnsupportedArch(t *testing.T) {
 	}
 }
 
-// 引擎已在运行 → 不重复安装。
+// 引擎已在运行 → 成功空操作（而非任务失败），并在输出中提示已安装。
 func TestInstallDockerAlreadyThere(t *testing.T) {
 	mgr, df, _ := dockerTestSetup(t)
 	df.installed = true
-	err := mgr.InstallDocker(context.Background(), &bytes.Buffer{}, 1)
-	if err == nil || !strings.Contains(err.Error(), "已安装") {
-		t.Fatalf("应提示已安装: %v", err)
+	var buf bytes.Buffer
+	err := mgr.InstallDocker(context.Background(), &buf, 1)
+	if err != nil {
+		t.Fatalf("已安装应为成功空操作: %v", err)
+	}
+	if !strings.Contains(buf.String(), "已安装") {
+		t.Fatalf("输出应提示已安装: %s", buf.String())
 	}
 }
 

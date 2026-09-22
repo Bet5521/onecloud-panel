@@ -57,6 +57,24 @@ var SecretKeys = map[string][]string{
 	"sms":        {"access_key_secret", "secret_key"},
 }
 
+// TargetMeta 各通道类型对「每用户接收标识」的需求描述，用于用户维护个人信息时提示。
+type TargetMeta struct {
+	Needed bool   // 是否必须填写每用户接收标识
+	Label  string // 表单标签
+	Hint   string // 提示文案
+	Secret bool   // 是否敏感（密码框回显）
+}
+
+// ChannelTarget 通道类型 → 接收标识需求。仅这几类需要按用户个性化下发。
+var ChannelTarget = map[string]TargetMeta{
+	"wxpusher": {Needed: true, Label: "接收者 UID", Hint: "WxPusher 接收者 UID，逗号分隔；留空则用通道默认主题", Secret: false},
+	"sms":      {Needed: true, Label: "接收手机号", Hint: "留空则使用通道默认接收号码", Secret: false},
+	"webhook":  {Needed: false, Label: "接收标识/Key", Hint: "随消息下发的用户标识，由接收端解析使用", Secret: true},
+}
+
+// TargetFor 返回通道类型的接收标识需求（未知类型返回零值）。
+func TargetFor(typ string) TargetMeta { return ChannelTarget[typ] }
+
 // Build 依据类型与配置构建发送器，并校验必填配置项。
 func Build(typ string, cfg map[string]string) (Sender, error) {
 	switch typ {
@@ -141,7 +159,10 @@ func (w *wxpusher) Send(msg Message) error {
 		"summary":     truncate(msg.Title),
 		"contentType": 1,
 	}
-	if len(w.uids) > 0 {
+	// 个性化：消息携带每用户接收标识时，优先定向给该 UID。
+	if msg.To != "" {
+		payload["uids"] = []string{strings.TrimSpace(msg.To)}
+	} else if len(w.uids) > 0 {
 		payload["uids"] = w.uids
 	}
 	if w.topic != "" {
@@ -257,9 +278,13 @@ type genericWebhook struct {
 	url string
 }
 
-// Send POST {"title","body"} JSON；HTTP 2xx 视为成功。
+// Send POST {"title","body"} JSON；HTTP 2xx 视为成功。个性化标识随 body 一并下发。
 func (w *genericWebhook) Send(msg Message) error {
-	_, err := postJSON(w.url, map[string]string{"title": msg.Title, "body": msg.Body, "content": msg.Body})
+	payload := map[string]string{"title": msg.Title, "body": msg.Body, "content": msg.Body}
+	if msg.To != "" {
+		payload["to"] = msg.To
+	}
+	_, err := postJSON(w.url, payload)
 	if err != nil {
 		return fmt.Errorf("webhook: %w", err)
 	}

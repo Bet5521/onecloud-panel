@@ -6,6 +6,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 
 	"gopkg.in/yaml.v3"
 )
@@ -30,8 +31,35 @@ var idPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{1,32}$`)
 
 // Registry 配方注册表。
 type Registry struct {
+	mu    sync.RWMutex
 	byID  map[string]*Recipe
 	order []string
+}
+
+// Add 注册（或覆盖）一个配方；用于运行时注入自定义应用合成配方。
+func (g *Registry) Add(r *Recipe) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if _, exists := g.byID[r.ID]; !exists {
+		g.order = append(g.order, r.ID)
+	}
+	g.byID[r.ID] = r
+}
+
+// Remove 移除配方（自定义应用删除时调用）。
+func (g *Registry) Remove(id string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if _, exists := g.byID[id]; !exists {
+		return
+	}
+	delete(g.byID, id)
+	for i, x := range g.order {
+		if x == id {
+			g.order = append(g.order[:i], g.order[i+1:]...)
+			break
+		}
+	}
 }
 
 // Load 从 fsys 加载并校验全部配方；"_" 前缀文件为内部占位，跳过。
@@ -79,6 +107,8 @@ func Load(fsys fs.FS) (*Registry, error) {
 
 // List 全部配方（稳定顺序）。
 func (g *Registry) List() []*Recipe {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
 	out := make([]*Recipe, 0, len(g.order))
 	for _, id := range g.order {
 		out = append(out, g.byID[id])
@@ -88,6 +118,8 @@ func (g *Registry) List() []*Recipe {
 
 // Get 按 ID 取配方。
 func (g *Registry) Get(id string) (*Recipe, bool) {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
 	r, ok := g.byID[id]
 	return r, ok
 }

@@ -28,6 +28,7 @@ type Manager struct {
 	audit      *audit.Service
 	execHook   func(*store.Node) (executor.Executor, error) // 仅测试用
 	engineHook func(*store.Node) (*docker.Engine, error)    // 仅测试用
+	binaryDir  string                                       // 自定义二进制目录
 }
 
 // New 创建管理器。

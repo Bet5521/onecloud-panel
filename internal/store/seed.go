@@ -86,13 +86,14 @@ func (s *Store) UserByID(id int64) (*User, error) {
 func (s *Store) user(where string, args ...any) (*User, error) {
 	q := `SELECT id, username, real_name, phone, password_hash, super_code, role_id, status,
 	             notify_method, notify_email, notify_sms_phone, notify_channel_id,
+	             notify_target,
 	             created_at, updated_at
 	      FROM users ` + where
 	u := &User{}
 	err := s.DB.QueryRow(q, args...).Scan(
 		&u.ID, &u.Username, &u.RealName, &u.Phone, &u.PasswordHash, &u.SuperCode,
 		&u.RoleID, &u.Status,
-		&u.NotifyMethod, &u.NotifyEmail, &u.NotifySMSPhone, &u.NotifyChannelID,
+		&u.NotifyMethod, &u.NotifyEmail, &u.NotifySMSPhone, &u.NotifyChannelID, &u.NotifyTarget,
 		&u.CreatedAt, &u.UpdatedAt)
 	if err != nil {
 		return nil, err

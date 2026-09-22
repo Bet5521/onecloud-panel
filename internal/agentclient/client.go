@@ -3,6 +3,7 @@ package agentclient
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -168,13 +169,22 @@ func (c *Client) ReadFile(path string) ([]byte, error) {
 	if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
 		return nil, err
 	}
+	// 优先使用 base64（二进制安全）；回落 Content 以兼容仅返回文本的服务端。
+	if r.ContentB64 != "" {
+		dec, derr := base64.StdEncoding.DecodeString(r.ContentB64)
+		if derr != nil {
+			return nil, fmt.Errorf("content_b64 解码失败: %w", derr)
+		}
+		return dec, nil
+	}
 	return []byte(r.Content), nil
 }
 
-// WriteFile 写入白名单文件。
+// WriteFile 写入白名单文件。二进制内容以 base64 传输，避免 JSON 字符串
+// 对非法 UTF-8 字节的替换（\ufffd）造成静默损坏。
 func (c *Client) WriteFile(path string, data []byte) error {
 	resp, err := c.req(context.Background(), http.MethodPut, "/v1/file",
-		agent.FileReq{Path: path, Content: string(data)})
+		agent.FileReq{Path: path, ContentB64: base64.StdEncoding.EncodeToString(data)})
 	if err != nil {
 		return err
 	}

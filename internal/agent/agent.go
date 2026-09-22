@@ -33,6 +33,7 @@ func Run(cfg *config.Agent) error {
 	if cfg.Server != "" {
 		state.Server = strings.TrimRight(cfg.Server, "/")
 	}
+	applyConfigToken(state, cfg.Token)
 	if state.Server == "" {
 		return errors.New("缺少面板地址 --server")
 	}
@@ -43,7 +44,7 @@ func Run(cfg *config.Agent) error {
 	// 首次注册
 	if state.Token == "" {
 		if cfg.RegisterToken == "" {
-			return errors.New("需要 --register-token 完成首次注册")
+			return errors.New("需要 --register-token（首次注册）或 --token（已注册）完成纳管")
 		}
 		port := listenPort(cfg.Listen)
 		if err := registerLoop(ctx, state, cfg.RegisterToken, port, cfg.InsecureTLS); err != nil {
@@ -136,6 +137,15 @@ func heartbeatLoop(ctx context.Context, dataDir string, state *State, holder *to
 		case <-ticker.C:
 			beat()
 		}
+	}
+}
+
+// applyConfigToken 本地无注册身份时用命令行/环境传入的长期 Token 兜底
+// （agent.json 丢失后按 --token 重装的场景）；已有本地身份时保持不动，
+// 避免用 env 里可能过期的值覆盖心跳轮换后的新 Token。
+func applyConfigToken(state *State, token string) {
+	if state.Token == "" && token != "" {
+		state.Token = token
 	}
 }
 

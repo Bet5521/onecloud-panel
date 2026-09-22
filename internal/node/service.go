@@ -122,6 +122,7 @@ func (s *Service) Register(req *agent.RegisterRequest, remoteAddr string) (int64
 		Status:         "pending",
 		Address:        address,
 		AgentTokenHash: hash(nodeToken),
+		OwnerUserID:    tok.CreatedBy,
 		CreatedAt:      now,
 		UpdatedAt:      now,
 	}
@@ -224,8 +225,8 @@ func (s *Service) Confirm(id int64, name, networkType, address, altAddress strin
 	return n, nil
 }
 
-// ManualAdd 手动添加节点。
-func (s *Service) ManualAdd(name, address, token, networkType string) (int64, error) {
+// ManualAdd 手动添加节点。ownerUserID 为添加者；传 nil 表示系统级（管理员代建）。
+func (s *Service) ManualAdd(name, address, token, networkType string, ownerUserID *int64) (int64, error) {
 	if name == "" || address == "" || token == "" {
 		return 0, errors.New("名称、地址、Token 均必填")
 	}
@@ -243,6 +244,7 @@ func (s *Service) ManualAdd(name, address, token, networkType string) (int64, er
 		NetworkType:    networkType,
 		Address:        address,
 		AgentTokenHash: hash(token),
+		OwnerUserID:    ownerUserID,
 		CreatedAt:      now,
 		UpdatedAt:      now,
 	}
@@ -300,6 +302,25 @@ func (s *Service) Get(id int64) (*store.Node, error) { return s.store.GetNode(id
 // List 全部节点。历史数据里本机节点 network_type 可能为空，读取时兜底为 local。
 func (s *Service) List() ([]store.Node, error) {
 	nodes, err := s.store.ListNodes()
+	if err != nil {
+		return nil, err
+	}
+	for i := range nodes {
+		if nodes[i].NetworkType == "" {
+			if nodes[i].Mode == "local" {
+				nodes[i].NetworkType = "local"
+			} else {
+				nodes[i].NetworkType = "lan"
+			}
+		}
+	}
+	return nodes, nil
+}
+
+// ListFiltered 按可见性过滤节点（非管理员仅能看到自己添加的节点）。
+// 历史数据里本机节点 network_type 可能为空，读取时兜底为 local。
+func (s *Service) ListFiltered(f store.NodeListFilter) ([]store.Node, error) {
+	nodes, err := s.store.ListNodesFiltered(f)
 	if err != nil {
 		return nil, err
 	}

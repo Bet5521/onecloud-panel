@@ -8,6 +8,7 @@ import (
 
 	"onecloud-panel/internal/audit"
 	"onecloud-panel/internal/auth"
+	"onecloud-panel/internal/notify"
 	"onecloud-panel/internal/store"
 )
 
@@ -20,6 +21,7 @@ type userDTO struct {
 	NotifyEmail     string `json:"notify_email"`
 	NotifySMSPhone  string `json:"notify_sms_phone"`
 	NotifyChannelID int64  `json:"notify_channel_id"` // 0 = 未指定
+	NotifyTarget    string `json:"notify_target"`     // 每用户接收标识(UUID/Key/手机号)
 	RoleID          int64  `json:"role_id"`
 	RoleCode        string `json:"role_code"`
 	RoleName        string `json:"role_name"`
@@ -31,7 +33,8 @@ type userDTO struct {
 func toUserDTO(u store.User, roles []store.Role) userDTO {
 	d := userDTO{ID: u.ID, Username: u.Username, RealName: u.RealName, Phone: u.Phone,
 		NotifyMethod: u.NotifyMethod, NotifyEmail: u.NotifyEmail, NotifySMSPhone: u.NotifySMSPhone,
-		RoleID: u.RoleID, Status: u.Status, CreatedAt: u.CreatedAt}
+		NotifyTarget: derefStr(u.NotifyTarget),
+		RoleID:       u.RoleID, Status: u.Status, CreatedAt: u.CreatedAt}
 	if u.NotifyChannelID != nil {
 		d.NotifyChannelID = *u.NotifyChannelID
 	}
@@ -45,31 +48,39 @@ func toUserDTO(u store.User, roles []store.Role) userDTO {
 	return d
 }
 
-// validNotifyMethods 用户级通知方式枚举。
-var validNotifyMethods = map[string]bool{"log": true, "email": true, "sms": true, "channel": true}
+// validNotifyMethods 用户级通知方式枚举（email/sms 已并入通道体系，仅保留 log/channel）。
+var validNotifyMethods = map[string]bool{"log": true, "channel": true, "email": true, "sms": true}
 
-// validateNotify 校验通知方式配置；channelID 传 0 表示未指定。
-func (a *API) validateNotify(method, email, smsPhone string, channelID int64) error {
+// methodFromChannel 由通道选择推导通知方式：选中通道为 channel，否则仅面板日志。
+func methodFromChannel(channelID int64) string {
+	if channelID > 0 {
+		return "channel"
+	}
+	return "log"
+}
+
+// validateNotify 校验用户通知方式：method 仅 log/channel/email/sms；
+// email/sms 走平台(SMTP/短信网关)，不依赖用户绑定的通知通道、不要求接收标识；
+// channel 必须为已启用通道，且若通道需要每用户接收标识则 target 必填。
+func (a *API) validateNotify(method string, channelID int64, target *string) error {
 	if !validNotifyMethods[method] {
-		return errors.New("通知方式仅支持 log/email/sms/channel")
+		return errors.New("通知方式仅支持 log/channel/email/sms")
 	}
-	if email != "" && (!strings.Contains(email, "@") || len(email) > 200) {
-		return errors.New("通知邮箱格式不正确")
+	if method == "log" || method == "email" || method == "sms" {
+		return nil
 	}
-	if len(smsPhone) > 24 {
-		return errors.New("短信接收手机号长度需不超过 24")
+	if channelID <= 0 {
+		return errors.New("必须选择通知通道：请指定 notify_channel_id")
 	}
-	if method == "channel" {
-		if channelID <= 0 {
-			return errors.New("通知方式为通道时必须选择通知通道")
-		}
-		ch, err := a.store.NotificationChannelByID(channelID)
-		if err != nil {
-			return errors.New("通知通道不存在")
-		}
-		if !ch.Enabled {
-			return errors.New("通知通道未启用")
-		}
+	ch, err := a.store.NotificationChannelByID(channelID)
+	if err != nil {
+		return errors.New("通知通道不存在")
+	}
+	if !ch.Enabled {
+		return errors.New("通知通道未启用")
+	}
+	if meta := notify.TargetFor(ch.Type); meta.Needed && strings.TrimSpace(derefStr(target)) == "" {
+		return errors.New("该通道需要填写接收标识：" + meta.Label)
 	}
 	return nil
 }
@@ -82,10 +93,22 @@ func channelPtr(id int64) *int64 {
 	return &id
 }
 
+// derefStr 安全解引用 *string；nil 返回空串（用于可为 NULL 的 notify_target 等列）。
+func derefStr(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
+}
+
 type notifyChannelOption struct {
-	ID   int64  `json:"id"`
-	Name string `json:"name"`
-	Type string `json:"type"`
+	ID           int64  `json:"id"`
+	Name         string `json:"name"`
+	Type         string `json:"type"`
+	NeedsTarget  bool   `json:"needs_target"`  // 是否需要每用户接收标识
+	TargetLabel  string `json:"target_label"`  // 接收标识表单标签
+	TargetHint   string `json:"target_hint"`   // 接收标识提示
+	TargetSecret bool   `json:"target_secret"` // 是否敏感(密码框)
 }
 
 // GET /api/auth/notify-channels — 本人可选的通知通道（启用中，不含任何密钥）。
@@ -98,7 +121,20 @@ func (a *API) listMyNotifyChannels(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]notifyChannelOption, 0, len(channels))
 	for _, c := range channels {
-		out = append(out, notifyChannelOption{ID: c.ID, Name: c.Name, Type: c.Type})
+		// 配置未完成的通道不出现在用户可选列表（满足「未配置的不可选」）
+		if _, berr := notify.Build(c.Type, parseConfig(c.ConfigJSON)); berr != nil {
+			continue
+		}
+		meta := notify.TargetFor(c.Type)
+		out = append(out, notifyChannelOption{
+			ID:           c.ID,
+			Name:         c.Name,
+			Type:         c.Type,
+			NeedsTarget:  meta.Needed,
+			TargetLabel:  meta.Label,
+			TargetHint:   meta.Hint,
+			TargetSecret: meta.Secret,
+		})
 	}
 	writeJSON(w, map[string]any{"items": out})
 }
@@ -131,15 +167,16 @@ func (a *API) newSuperCode(userID int64) (string, error) {
 }
 
 type createUserReq struct {
-	Username        string `json:"username"`
-	Password        string `json:"password"`
-	RoleID          int64  `json:"role_id"`
-	RealName        string `json:"real_name"`
-	Phone           string `json:"phone"`
-	NotifyMethod    string `json:"notify_method"`
-	NotifyEmail     string `json:"notify_email"`
-	NotifySMSPhone  string `json:"notify_sms_phone"`
-	NotifyChannelID int64  `json:"notify_channel_id"`
+	Username        string  `json:"username"`
+	Password        string  `json:"password"`
+	RoleID          int64   `json:"role_id"`
+	RealName        string  `json:"real_name"`
+	Phone           string  `json:"phone"`
+	NotifyMethod    string  `json:"notify_method"`
+	NotifyEmail     string  `json:"notify_email"`
+	NotifySMSPhone  string  `json:"notify_sms_phone"`
+	NotifyChannelID int64   `json:"notify_channel_id"`
+	NotifyTarget    *string `json:"notify_target"`
 }
 
 // POST /api/users
@@ -154,6 +191,10 @@ func (a *API) createUser(w http.ResponseWriter, r *http.Request) {
 	req.Phone = strings.TrimSpace(req.Phone)
 	req.NotifyEmail = strings.TrimSpace(req.NotifyEmail)
 	req.NotifySMSPhone = strings.TrimSpace(req.NotifySMSPhone)
+	if req.NotifyTarget != nil {
+		s := strings.TrimSpace(*req.NotifyTarget)
+		req.NotifyTarget = &s
+	}
 	if len(req.Username) < 3 || len(req.Username) > 32 {
 		writeError(w, 400, "用户名长度需为 3-32")
 		return
@@ -171,9 +212,12 @@ func (a *API) createUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.NotifyMethod == "" {
-		req.NotifyMethod = "log"
+		req.NotifyMethod = methodFromChannel(req.NotifyChannelID)
+	} else if !validNotifyMethods[req.NotifyMethod] {
+		writeError(w, 400, "通知方式仅支持 log/channel/email/sms")
+		return
 	}
-	if err := a.validateNotify(req.NotifyMethod, req.NotifyEmail, req.NotifySMSPhone, req.NotifyChannelID); err != nil {
+	if err := a.validateNotify(req.NotifyMethod, req.NotifyChannelID, req.NotifyTarget); err != nil {
 		writeError(w, 400, err.Error())
 		return
 	}
@@ -196,7 +240,7 @@ func (a *API) createUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := a.store.UpdateUserNotify(u.ID, req.NotifyMethod, req.NotifyEmail,
-		req.NotifySMSPhone, channelPtr(req.NotifyChannelID)); err != nil {
+		req.NotifySMSPhone, channelPtr(req.NotifyChannelID), req.NotifyTarget); err != nil {
 		writeError(w, 500, "通知方式保存失败")
 		return
 	}
@@ -230,6 +274,7 @@ type updateUserReq struct {
 	NotifyEmail     *string `json:"notify_email"`
 	NotifySMSPhone  *string `json:"notify_sms_phone"`
 	NotifyChannelID *int64  `json:"notify_channel_id"` // 0 = 清除
+	NotifyTarget    *string `json:"notify_target"`
 }
 
 // PUT /api/users/{id}
@@ -330,18 +375,13 @@ func (a *API) updateUser(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if req.NotifyMethod != nil || req.NotifyEmail != nil ||
-		req.NotifySMSPhone != nil || req.NotifyChannelID != nil {
+		req.NotifySMSPhone != nil || req.NotifyChannelID != nil || req.NotifyTarget != nil {
 		method, email, smsPhone := target.NotifyMethod, target.NotifyEmail, target.NotifySMSPhone
-		if method == "" {
-			method = "log"
-		}
 		chID := int64(0)
 		if target.NotifyChannelID != nil {
 			chID = *target.NotifyChannelID
 		}
-		if req.NotifyMethod != nil {
-			method = strings.TrimSpace(*req.NotifyMethod)
-		}
+		tgt := target.NotifyTarget
 		if req.NotifyEmail != nil {
 			email = strings.TrimSpace(*req.NotifyEmail)
 		}
@@ -351,11 +391,20 @@ func (a *API) updateUser(w http.ResponseWriter, r *http.Request) {
 		if req.NotifyChannelID != nil {
 			chID = *req.NotifyChannelID
 		}
-		if err := a.validateNotify(method, email, smsPhone, chID); err != nil {
+		if req.NotifyTarget != nil {
+			s := strings.TrimSpace(*req.NotifyTarget)
+			tgt = &s
+		}
+		if req.NotifyMethod != nil && *req.NotifyMethod != "" {
+			method = *req.NotifyMethod
+		} else {
+			method = methodFromChannel(chID)
+		}
+		if err := a.validateNotify(method, chID, tgt); err != nil {
 			writeError(w, 400, err.Error())
 			return
 		}
-		if err := a.store.UpdateUserNotify(id, method, email, smsPhone, channelPtr(chID)); err != nil {
+		if err := a.store.UpdateUserNotify(id, method, email, smsPhone, channelPtr(chID), tgt); err != nil {
 			writeError(w, 500, "通知方式更新失败")
 			return
 		}
@@ -449,6 +498,7 @@ type myProfileReq struct {
 	NotifyEmail     *string `json:"notify_email"`
 	NotifySMSPhone  *string `json:"notify_sms_phone"`
 	NotifyChannelID *int64  `json:"notify_channel_id"` // 0 = 清除
+	NotifyTarget    *string `json:"notify_target"`
 }
 
 // PUT /api/auth/profile — 本人更新姓名、手机号与通知方式。
@@ -478,7 +528,7 @@ func (a *API) updateMyProfile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	notifyChanged := req.NotifyMethod != nil || req.NotifyEmail != nil ||
-		req.NotifySMSPhone != nil || req.NotifyChannelID != nil
+		req.NotifySMSPhone != nil || req.NotifyChannelID != nil || req.NotifyTarget != nil
 	if notifyChanged {
 		cur, err := a.store.UserByID(ident.User.ID)
 		if err != nil {
@@ -486,16 +536,11 @@ func (a *API) updateMyProfile(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		method, email, smsPhone := cur.NotifyMethod, cur.NotifyEmail, cur.NotifySMSPhone
-		if method == "" {
-			method = "log"
-		}
 		chID := int64(0)
 		if cur.NotifyChannelID != nil {
 			chID = *cur.NotifyChannelID
 		}
-		if req.NotifyMethod != nil {
-			method = strings.TrimSpace(*req.NotifyMethod)
-		}
+		tgt := cur.NotifyTarget
 		if req.NotifyEmail != nil {
 			email = strings.TrimSpace(*req.NotifyEmail)
 		}
@@ -505,11 +550,20 @@ func (a *API) updateMyProfile(w http.ResponseWriter, r *http.Request) {
 		if req.NotifyChannelID != nil {
 			chID = *req.NotifyChannelID
 		}
-		if err := a.validateNotify(method, email, smsPhone, chID); err != nil {
+		if req.NotifyTarget != nil {
+			s := strings.TrimSpace(*req.NotifyTarget)
+			tgt = &s
+		}
+		if req.NotifyMethod != nil && *req.NotifyMethod != "" {
+			method = *req.NotifyMethod
+		} else {
+			method = methodFromChannel(chID)
+		}
+		if err := a.validateNotify(method, chID, tgt); err != nil {
 			writeError(w, 400, err.Error())
 			return
 		}
-		if err := a.store.UpdateUserNotify(ident.User.ID, method, email, smsPhone, channelPtr(chID)); err != nil {
+		if err := a.store.UpdateUserNotify(ident.User.ID, method, email, smsPhone, channelPtr(chID), tgt); err != nil {
 			writeError(w, 500, "通知方式更新失败")
 			return
 		}

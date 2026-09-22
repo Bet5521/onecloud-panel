@@ -38,15 +38,17 @@ func (m *Manager) InstallDocker(ctx context.Context, w io.Writer, nodeID int64) 
 	if err != nil {
 		return err
 	}
+	// 已安装则只刷新状态，并作为「成功空操作」返回：把「已就绪」报成任务失败会误导用户。
+	// 该判定前移到架构校验之前——手工装好 Docker 的节点即便架构不在官方仓库表内也应可用。
+	if ok2, ver, _ := m.DockerStatus(ctx, n); ok2 {
+		_ = m.store.SetNodeDockerVersion(n.ID, ver)
+		fmt.Fprintf(w, "✓ Docker 已安装（%s），无需重复安装\n", ver)
+		return nil
+	}
+
 	dpkgArch, ok := dockerArchMap[n.Arch]
 	if !ok {
 		return fmt.Errorf("节点架构 %q 无官方 Docker 仓库支持（可手动安装后由面板自动识别）", n.Arch)
-	}
-
-	// 已安装则只刷新状态
-	if ok2, ver, _ := m.DockerStatus(ctx, n); ok2 {
-		_ = m.store.SetNodeDockerVersion(n.ID, ver)
-		return fmt.Errorf("Docker 已安装（%s），无需重复安装", ver)
 	}
 
 	// 识别发行版

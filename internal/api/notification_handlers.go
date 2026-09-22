@@ -13,13 +13,14 @@ import (
 )
 
 type notificationChannelDTO struct {
-	ID       int64          `json:"id"`
-	Type     string         `json:"type"`
-	TypeName string         `json:"type_name"`
-	Name     string         `json:"name"`
-	Config   map[string]any `json:"config"`
-	Enabled  bool           `json:"enabled"`
-	TestedAt int64          `json:"tested_at"`
+	ID         int64          `json:"id"`
+	Type       string         `json:"type"`
+	TypeName   string         `json:"type_name"`
+	Name       string         `json:"name"`
+	Config     map[string]any `json:"config"`
+	Enabled    bool           `json:"enabled"`
+	Configured bool           `json:"configured"` // 配置是否完整（可成功构建发送器）
+	TestedAt   int64          `json:"tested_at"`
 }
 
 // parseConfig 将配置 JSON 解析为扁平字符串映射。
@@ -83,14 +84,16 @@ func encodeConfig(typ, oldJSON string, cfg map[string]string) (string, error) {
 }
 
 func (a *API) channelDTO(c store.NotificationChannel) notificationChannelDTO {
+	_, configured := notify.Build(c.Type, parseConfig(c.ConfigJSON))
 	return notificationChannelDTO{
-		ID:       c.ID,
-		Type:     c.Type,
-		TypeName: notify.Types[c.Type],
-		Name:     c.Name,
-		Config:   maskConfig(c.Type, parseConfig(c.ConfigJSON)),
-		Enabled:  c.Enabled,
-		TestedAt: c.TestedAt,
+		ID:         c.ID,
+		Type:       c.Type,
+		TypeName:   notify.Types[c.Type],
+		Name:       c.Name,
+		Config:     maskConfig(c.Type, parseConfig(c.ConfigJSON)),
+		Enabled:    c.Enabled,
+		Configured: configured == nil,
+		TestedAt:   c.TestedAt,
 	}
 }
 
@@ -143,6 +146,13 @@ func (a *API) createNotificationChannel(w http.ResponseWriter, r *http.Request) 
 	if req.Enabled != nil {
 		enabled = *req.Enabled
 	}
+	// 配置未完成的通道不允许启用
+	if enabled {
+		if _, berr := notify.Build(req.Type, parseConfig(cfgJSON)); berr != nil {
+			writeError(w, 400, "通道未配置完成，无法启用："+berr.Error())
+			return
+		}
+	}
 	c, err := a.store.CreateNotificationChannel(&store.NotificationChannel{
 		Type: req.Type, Name: req.Name, ConfigJSON: cfgJSON, Enabled: enabled,
 	})
@@ -189,6 +199,13 @@ func (a *API) updateNotificationChannel(w http.ResponseWriter, r *http.Request) 
 	enabled := c.Enabled
 	if req.Enabled != nil {
 		enabled = *req.Enabled
+	}
+	// 配置未完成的通道不允许启用
+	if enabled {
+		if _, berr := notify.Build(c.Type, parseConfig(cfgJSON)); berr != nil {
+			writeError(w, 400, "通道未配置完成，无法启用："+berr.Error())
+			return
+		}
 	}
 	if err := a.store.UpdateNotificationChannel(id, name, cfgJSON, enabled); err != nil {
 		writeError(w, 500, "更新通知通道失败")

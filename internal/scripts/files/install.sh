@@ -180,6 +180,22 @@ install_agent() {
   mkdir -p "$data_dir"
   chmod 0750 "$data_dir"
 
+  # Agent 本地身份（agent.json）非空时会跳过注册，故：
+  #   面板地址未变 → 保留旧身份（同一面板重复安装不产生重复节点）；
+  #   面板地址已变更 → 备份旧身份后重新注册（面板迁移/重装后仍可纳管本机）。
+  local agent_state="${data_dir}/agent.json"
+  if [ -f "$agent_state" ]; then
+    local prev_server=""
+    prev_server="$(awk -F'"' '/"server"[[:space:]]*:/{print $4; exit}' "$agent_state" 2>/dev/null || true)"
+    if [ -n "$prev_server" ] && [ "$prev_server" != "$server" ]; then
+      local backup="${agent_state}.bak.$(date +%s)"
+      mv "$agent_state" "$backup"
+      log "检测到旧注册身份（原面板 ${prev_server}），已备份至 ${backup}，将按新面板地址重新注册"
+    else
+      log "检测到本地已注册身份（面板 ${prev_server:-未知}），保留现有注册不重复注册"
+    fi
+  fi
+
   write_file "$AGENT_ENV_FILE" "OCP_LISTEN=${listen}
 OCP_DATA_DIR=${data_dir}
 OCP_SERVER=${server}

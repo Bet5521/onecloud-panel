@@ -31,6 +31,42 @@
         </el-row>
       </el-tab-pane>
 
+      <el-tab-pane label="自定义应用" name="custom">
+        <div class="filter-bar" v-if="can('app:read')">
+          <el-button v-if="can('app:write')" type="primary" @click="openCreateCustom">新建自定义应用</el-button>
+          <span class="muted">支持连接 GitHub 源码、Docker 容器、或直接上传二进制程序部署到节点。</span>
+        </div>
+
+        <el-row :gutter="12" v-loading="customLoading" v-if="can('app:read')">
+          <el-col :xs="24" :sm="12" :md="8" :lg="6" v-for="c in customApps" :key="c.id">
+            <el-card shadow="hover" class="app-card">
+              <div class="app-head">
+                <span class="app-name">{{ c.name }}</span>
+                <el-tag size="small" :type="typeTag(c.type)" effect="plain">{{ typeLabel(c.type) }}</el-tag>
+              </div>
+              <p class="app-desc">{{ c.description || '暂无描述' }}</p>
+              <div class="app-meta">
+                <el-tag v-if="c.type === 'binary' && !c.has_binary" size="small" type="warning" effect="plain">
+                  未上传二进制
+                </el-tag>
+                <el-tag v-if="c.owner_user_id == null" size="small" type="info" effect="plain">系统级</el-tag>
+              </div>
+              <div class="app-actions">
+                <el-button size="small" type="primary" :disabled="!can('app:write') || (c.type === 'binary' && !c.has_binary)"
+                  @click="installCustom(c)">安装</el-button>
+                <el-button size="small" :disabled="!can('app:write')" @click="openEditCustom(c)">编辑</el-button>
+                <el-button v-if="c.type === 'binary' && can('app:write')" size="small" @click="pickUpload(c)">上传</el-button>
+                <el-button size="small" type="danger" plain :disabled="!can('app:write')" @click="removeCustom(c)">删除</el-button>
+              </div>
+            </el-card>
+          </el-col>
+          <el-col v-if="!customApps.length && !customLoading" :span="24">
+            <el-empty description="暂无自定义应用" />
+          </el-col>
+        </el-row>
+        <el-empty v-if="!can('app:read')" description="无查看权限" />
+      </el-tab-pane>
+
       <el-tab-pane label="已安装" name="installed">
         <el-table :data="installedRows" v-loading="instLoading" size="default">
           <el-table-column label="节点" min-width="140">
@@ -98,14 +134,143 @@
     </template>
   </el-dialog>
 
+  <!-- 自定义应用新建/编辑向导 -->
+  <el-dialog v-model="customDlg" :title="editingId ? '编辑自定义应用' : '新建自定义应用'" width="660px"
+    destroy-on-close @closed="resetCustomForm">
+    <el-form ref="customRef" :model="customForm" label-width="120px">
+      <el-form-item label="类型" required>
+        <el-radio-group v-model="customForm.type" :disabled="!!editingId">
+          <el-radio value="docker">Docker 容器</el-radio>
+          <el-radio value="github">GitHub 源码</el-radio>
+          <el-radio value="binary">二进制程序</el-radio>
+        </el-radio-group>
+      </el-form-item>
+      <el-form-item label="名称" required>
+        <el-input v-model="customForm.name" maxlength="64" placeholder="应用显示名称" />
+      </el-form-item>
+      <el-form-item label="分类">
+        <el-input v-model="customForm.category" placeholder="如 工具 / 媒体 / 网络" />
+      </el-form-item>
+      <el-form-item label="图标">
+        <el-input v-model="customForm.icon" placeholder="emoji 或图标字符，如 🐳" />
+      </el-form-item>
+      <el-form-item label="描述">
+        <el-input v-model="customForm.description" type="textarea" :rows="2" />
+      </el-form-item>
+      <el-form-item label="主页">
+        <el-input v-model="customForm.homepage" placeholder="https://..." />
+      </el-form-item>
+
+      <!-- Docker -->
+      <template v-if="customForm.type === 'docker'">
+        <el-divider content-position="left">容器配置</el-divider>
+        <el-form-item label="镜像" required>
+          <el-input v-model="customForm.image" placeholder="如 nginx:latest" />
+        </el-form-item>
+        <el-form-item label="端口映射">
+          <el-input v-model="customForm.ports" type="textarea" :rows="2"
+            placeholder="每行或逗号分隔：8080:80/tcp" />
+        </el-form-item>
+        <el-form-item label="环境变量">
+          <el-input v-model="customForm.env" type="textarea" :rows="2" placeholder="TZ=Asia/Shanghai" />
+        </el-form-item>
+        <el-form-item label="数据卷">
+          <el-input v-model="customForm.volumes" type="textarea" :rows="2" placeholder="/data/app:/data" />
+        </el-form-item>
+        <el-form-item label="重启策略">
+          <el-select v-model="customForm.restart" style="width: 100%">
+            <el-option label="unless-stopped" value="unless-stopped" />
+            <el-option label="always" value="always" />
+            <el-option label="on-failure" value="on-failure" />
+            <el-option label="no" value="no" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="网络模式">
+          <el-input v-model="customForm.network" placeholder="bridge / host" />
+        </el-form-item>
+        <el-form-item label="特权模式">
+          <el-switch v-model="customForm.privileged" />
+        </el-form-item>
+      </template>
+
+      <!-- GitHub -->
+      <template v-if="customForm.type === 'github'">
+        <el-divider content-position="left">源码配置</el-divider>
+        <el-form-item label="仓库地址" required>
+          <el-input v-model="customForm.repo" placeholder="https://github.com/user/repo" />
+        </el-form-item>
+        <el-form-item label="分支">
+          <el-input v-model="customForm.branch" placeholder="默认 main" />
+        </el-form-item>
+        <el-form-item label="运行命令">
+          <el-input v-model="customForm.run" placeholder="默认 docker compose up -d" />
+          <span class="hint">克隆后在该目录执行的启动命令（支持 gh-proxy 加速克隆）。</span>
+        </el-form-item>
+      </template>
+
+      <!-- Binary -->
+      <template v-if="customForm.type === 'binary'">
+        <el-divider content-position="left">二进制配置</el-divider>
+        <el-form-item label="可执行文件名" required>
+          <el-input v-model="customForm.exec_name" placeholder="如 myapp（上传文件将以此名落盘）" />
+        </el-form-item>
+        <el-form-item label="启动参数">
+          <el-input v-model="customForm.args" placeholder="如 -p 8080 --debug" />
+        </el-form-item>
+        <el-form-item label="工作目录">
+          <el-input v-model="customForm.workdir" placeholder="默认 /opt/onecloud-apps/<id>" />
+        </el-form-item>
+        <el-form-item label="运行用户">
+          <el-input v-model="customForm.user" placeholder="默认 root" />
+        </el-form-item>
+        <el-form-item label="二进制文件">
+          <input type="file" @change="onWizardFile" />
+          <span v-if="editingId && editingHasBinary" class="hint">已上传，重新选择可覆盖。</span>
+          <span v-else-if="binaryFile" class="hint">已选择：{{ binaryFile.name }}</span>
+        </el-form-item>
+      </template>
+
+      <!-- 健康检查（通用） -->
+      <el-divider content-position="left">健康检查（可选）</el-divider>
+      <el-form-item label="类型">
+        <el-select v-model="customForm.healthType" style="width: 100%" clearable>
+          <el-option label="无" value="" />
+          <el-option label="TCP" value="tcp" />
+          <el-option label="HTTP" value="http" />
+          <el-option label="命令" value="command" />
+        </el-select>
+      </el-form-item>
+      <el-form-item v-if="customForm.healthType === 'tcp' || customForm.healthType === 'http'" label="端口">
+        <el-input-number v-model="customForm.healthPort" :min="1" :max="65535" />
+      </el-form-item>
+      <el-form-item v-if="customForm.healthType === 'http'" label="路径">
+        <el-input v-model="customForm.healthPath" placeholder="如 /healthz" />
+      </el-form-item>
+      <el-form-item v-if="customForm.healthType === 'command'" label="命令">
+        <el-input v-model="customForm.healthCmd" placeholder="如 curl -f http://localhost:8080" />
+      </el-form-item>
+
+      <el-form-item v-if="isAdmin" label="系统级">
+        <el-switch v-model="customForm.system" />
+        <span class="hint">管理员勾选后该应用对所有用户可见（owner 为空）。</span>
+      </el-form-item>
+    </el-form>
+    <template #footer>
+      <el-button @click="customDlg = false">取消</el-button>
+      <el-button type="primary" :loading="customSaving" @click="submitCustom">保存</el-button>
+    </template>
+  </el-dialog>
+
+  <input ref="uploadInput" type="file" hidden @change="onUploadChange" />
+
   <TaskProgressDialog v-if="taskId" :task-id="taskId"
     @close="taskId = null" @finished="onFinished" />
 </template>
 
 <script setup>
 import { ref, reactive, computed, onMounted, watch } from 'vue'
-import { ElMessage } from 'element-plus'
-import { get, post } from '../api/http'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import { get, post, put, del } from '../api/http'
 import { session } from '../session'
 const can = (p) => session.can(p)
 import { fmtTime } from '../utils'
@@ -149,6 +314,7 @@ const installedRows = ref([])
 const instLoading = ref(false)
 function onTabChange(name) {
   if (name === 'installed') loadInstalled()
+  if (name === 'custom') loadCustomApps()
 }
 
 async function loadInstalled() {
@@ -255,6 +421,279 @@ function onFinished() {
   tab.value = 'installed'
   loadInstalled()
 }
+
+// ---- 自定义应用 ----
+const customApps = ref([])
+const customLoading = ref(false)
+const customDlg = ref(false)
+const editingId = ref(null)
+const editingHasBinary = ref(false)
+const customSaving = ref(false)
+const customRef = ref()
+const binaryFile = ref(null)
+const uploadInput = ref(null)
+const uploadTarget = ref(null)
+
+const isAdmin = computed(() => session.user?.role_code === 'admin')
+const customTypeOptions = { docker: 'Docker 容器', github: 'GitHub 源码', binary: '二进制程序' }
+const typeLabel = (t) => customTypeOptions[t] || t
+const typeTag = (t) => (t === 'docker' ? 'success' : t === 'github' ? 'warning' : 'primary')
+
+const customForm = reactive({
+  type: 'docker',
+  name: '', category: '', icon: '', description: '', homepage: '', system: false,
+  image: '', ports: '', env: '', volumes: '', restart: 'unless-stopped', privileged: false, network: 'bridge',
+  repo: '', branch: '', run: '',
+  exec_name: '', args: '', workdir: '', user: '',
+  healthType: '', healthPort: null, healthPath: '', healthCmd: ''
+})
+
+function resetCustomForm() {
+  editingId.value = null
+  editingHasBinary.value = false
+  binaryFile.value = null
+  Object.assign(customForm, {
+    type: 'docker', name: '', category: '', icon: '', description: '', homepage: '', system: false,
+    image: '', ports: '', env: '', volumes: '', restart: 'unless-stopped', privileged: false, network: 'bridge',
+    repo: '', branch: '', run: '', exec_name: '', args: '', workdir: '', user: '',
+    healthType: '', healthPort: null, healthPath: '', healthCmd: ''
+  })
+}
+
+function toArr(s) {
+  return String(s || '').split(/[\n,]/).map((x) => x.trim()).filter(Boolean)
+}
+
+async function loadCustomApps() {
+  if (!can('app:read')) return
+  customLoading.value = true
+  try {
+    const d = await get('/api/custom-apps')
+    customApps.value = d.items || []
+  } catch (e) {
+    ElMessage.error(e.message || '加载自定义应用失败')
+  } finally {
+    customLoading.value = false
+  }
+}
+
+function openCreateCustom() {
+  resetCustomForm()
+  customDlg.value = true
+}
+
+function openEditCustom(c) {
+  resetCustomForm()
+  editingId.value = c.id
+  editingHasBinary.value = !!c.has_binary
+  customForm.type = c.type
+  customForm.name = c.name
+  customForm.category = c.category || ''
+  customForm.icon = c.icon || ''
+  customForm.description = c.description || ''
+  customForm.homepage = c.homepage || ''
+  const cfg = c.config || {}
+  if (c.type === 'docker') {
+    customForm.image = cfg.image || ''
+    customForm.ports = (cfg.ports || []).join('\n')
+    customForm.env = (cfg.env || []).join('\n')
+    customForm.volumes = (cfg.volumes || []).join('\n')
+    customForm.restart = cfg.restart || 'unless-stopped'
+    customForm.privileged = !!cfg.privileged
+    customForm.network = cfg.network || 'bridge'
+  } else if (c.type === 'github') {
+    customForm.repo = cfg.repo || ''
+    customForm.branch = cfg.branch || ''
+    customForm.run = cfg.run || ''
+  } else if (c.type === 'binary') {
+    customForm.exec_name = cfg.exec_name || ''
+    customForm.args = cfg.args || ''
+    customForm.workdir = cfg.workdir || ''
+    customForm.user = cfg.user || ''
+  }
+  const h = cfg.health || {}
+  customForm.healthType = h.type || ''
+  customForm.healthPort = h.port || null
+  customForm.healthPath = h.path || ''
+  customForm.healthCmd = (h.cmd || []).join(' ')
+  customDlg.value = true
+}
+
+function buildHealth() {
+  const t = customForm.healthType
+  if (!t) return {}
+  if (t === 'command') {
+    const cmd = toArr(customForm.healthCmd)
+    if (!cmd.length) return {}
+    return { type: 'command', cmd }
+  }
+  if ((t === 'http' || t === 'tcp') && customForm.healthPort) {
+    const h = { type: t, port: Number(customForm.healthPort) }
+    if (t === 'http') h.path = customForm.healthPath || ''
+    return h
+  }
+  return {}
+}
+
+function buildConfig() {
+  const t = customForm.type
+  if (t === 'docker') {
+    return {
+      image: customForm.image.trim(),
+      ports: toArr(customForm.ports),
+      env: toArr(customForm.env),
+      volumes: toArr(customForm.volumes),
+      restart: customForm.restart || 'unless-stopped',
+      privileged: !!customForm.privileged,
+      network: customForm.network || 'bridge',
+      health: buildHealth()
+    }
+  }
+  if (t === 'github') {
+    return {
+      repo: customForm.repo.trim(),
+      branch: customForm.branch.trim(),
+      run: customForm.run.trim(),
+      health: buildHealth()
+    }
+  }
+  return {
+    exec_name: customForm.exec_name.trim(),
+    args: customForm.args,
+    workdir: customForm.workdir.trim(),
+    user: customForm.user.trim(),
+    health: buildHealth()
+  }
+}
+
+function onWizardFile(e) {
+  binaryFile.value = e.target.files?.[0] || null
+  e.target.value = ''
+}
+
+async function submitCustom() {
+  if (!customForm.name.trim()) {
+    ElMessage.warning('请填写应用名称')
+    return
+  }
+  if (customForm.type === 'docker' && !customForm.image.trim()) {
+    ElMessage.warning('请填写镜像')
+    return
+  }
+  if (customForm.type === 'github' && !customForm.repo.trim()) {
+    ElMessage.warning('请填写仓库地址')
+    return
+  }
+  if (customForm.type === 'binary' && !customForm.exec_name.trim()) {
+    ElMessage.warning('请填写可执行文件名')
+    return
+  }
+  customSaving.value = true
+  try {
+    const payload = {
+      type: customForm.type,
+      name: customForm.name.trim(),
+      category: customForm.category,
+      icon: customForm.icon,
+      description: customForm.description,
+      homepage: customForm.homepage,
+      config: buildConfig()
+    }
+    if (isAdmin.value && customForm.system) payload.system = true
+    let id
+    if (editingId.value) {
+      await put('/api/custom-apps/' + editingId.value, payload)
+      id = editingId.value
+      ElMessage.success('已保存')
+    } else {
+      const d = await post('/api/custom-apps', payload)
+      id = d.id
+      ElMessage.success('已创建')
+    }
+    if (customForm.type === 'binary' && binaryFile.value) {
+      await uploadBinary(id, binaryFile.value)
+      ElMessage.success('二进制已上传')
+    }
+    customDlg.value = false
+    loadCustomApps()
+  } catch (e) {
+    ElMessage.error(e.message || '保存失败')
+  } finally {
+    customSaving.value = false
+  }
+}
+
+async function uploadBinary(id, file) {
+  const fd = new FormData()
+  fd.append('file', file)
+  const resp = await fetch(`/api/custom-apps/${id}/binary`, {
+    method: 'POST', body: fd, credentials: 'same-origin'
+  })
+  if (!resp.ok) {
+    let msg = '上传失败'
+    try {
+      const t = await resp.text()
+      const j = JSON.parse(t)
+      if (j && j.error) msg = j.error
+    } catch { /* ignore */ }
+    throw new Error(msg)
+  }
+  return resp.json()
+}
+
+function pickUpload(c) {
+  uploadTarget.value = c
+  uploadInput.value?.click()
+}
+
+async function onUploadChange(e) {
+  const file = e.target.files?.[0]
+  if (!file || !uploadTarget.value) return
+  try {
+    await uploadBinary(uploadTarget.value.id, file)
+    ElMessage.success('二进制已上传')
+    loadCustomApps()
+  } catch (err) {
+    ElMessage.error(err.message || '上传失败')
+  } finally {
+    e.target.value = ''
+  }
+}
+
+function pseudoRecipe(c) {
+  return {
+    ID: 'custom-' + c.id,
+    Name: c.name,
+    Methods: c.type === 'docker' ? ['docker'] : ['native'],
+    Variables: [],
+    // 占位以通过前端兼容性判定（合成配方放行全部架构）
+    Docker: c.type === 'docker' ? {} : undefined,
+    Native: c.type !== 'docker' ? {} : undefined
+  }
+}
+
+function installCustom(c) {
+  if (c.type === 'binary' && !c.has_binary) {
+    ElMessage.warning('请先上传二进制文件')
+    return
+  }
+  openInstall(pseudoRecipe(c))
+}
+
+async function removeCustom(c) {
+  try {
+    await ElMessageBox.confirm(`确定删除自定义应用「${c.name}」吗？已安装实例不会被自动卸载。`, '提示', { type: 'warning' })
+  } catch {
+    return
+  }
+  try {
+    await del(`/api/custom-apps/${c.id}`)
+    ElMessage.success('已删除')
+    loadCustomApps()
+  } catch (e) {
+    ElMessage.error(e.message || '删除失败')
+  }
+}
 </script>
 
 <style scoped>
@@ -293,6 +732,12 @@ function onFinished() {
   gap: 6px;
   flex-wrap: wrap;
 }
+.app-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 10px;
+  flex-wrap: wrap;
+}
 .method-tag {
   margin: 0;
 }
@@ -303,5 +748,12 @@ function onFinished() {
 .muted {
   color: #909399;
   font-size: 13px;
+}
+.hint {
+  color: #909399;
+  font-size: 12px;
+  line-height: 1.6;
+  display: block;
+  margin-top: 4px;
 }
 </style>

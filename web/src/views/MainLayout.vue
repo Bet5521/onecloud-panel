@@ -79,6 +79,19 @@
           </el-select>
           <div v-if="!notifyChannels.length" class="tip">暂无启用中的通知通道，请先在「通知管理」中配置</div>
         </el-form-item>
+        <el-form-item
+          v-if="profileForm.notify_method === 'channel' && selectedChannel?.target_label"
+          :label="targetLabel"
+          :required="selectedChannel?.needs_target"
+        >
+          <el-input
+            v-model="profileForm.notify_target"
+            :type="selectedChannel?.target_secret ? 'password' : 'text'"
+            :show-password="selectedChannel?.target_secret"
+            :placeholder="'请输入' + targetLabel"
+          />
+          <div class="tip">{{ targetHint }}</div>
+        </el-form-item>
       </el-form>
       <template #footer>
         <el-button @click="profileDlg = false">取消</el-button>
@@ -107,13 +120,27 @@ const savingProfile = ref(false)
 const notifyChannels = ref([])
 const profileForm = reactive({
   real_name: '', phone: '',
-  notify_method: 'log', notify_email: '', notify_sms_phone: '', notify_channel_id: null
+  notify_method: 'log', notify_email: '', notify_sms_phone: '', notify_channel_id: null,
+  notify_target: ''
 })
 
+// 当前所选通道的「每用户接收标识」需求描述：决定是否显示 / 是否必填。
+const selectedChannel = computed(
+  () => notifyChannels.value.find((c) => c.id === profileForm.notify_channel_id) || null
+)
+const targetLabel = computed(() => selectedChannel.value?.target_label || '接收标识')
+const targetHint = computed(() => selectedChannel.value?.target_hint || '留空则使用通道默认接收方')
+
 async function saveProfile() {
-  if (profileForm.notify_method === 'channel' && !profileForm.notify_channel_id) {
-    ElMessage.warning('请选择通知通道')
-    return
+  if (profileForm.notify_method === 'channel') {
+    if (!profileForm.notify_channel_id) {
+      ElMessage.warning('请选择通知通道')
+      return
+    }
+    if (selectedChannel.value?.needs_target && !String(profileForm.notify_target || '').trim()) {
+      ElMessage.warning(`请填写${targetLabel.value}`)
+      return
+    }
   }
   savingProfile.value = true
   try {
@@ -123,7 +150,8 @@ async function saveProfile() {
       notify_method: profileForm.notify_method,
       notify_email: profileForm.notify_email,
       notify_sms_phone: profileForm.notify_sms_phone,
-      notify_channel_id: profileForm.notify_channel_id || 0
+      notify_channel_id: profileForm.notify_channel_id || 0,
+      notify_target: profileForm.notify_target || ''
     })
     // 同步本地会话展示
     if (session.user) {
@@ -160,6 +188,7 @@ async function openProfile() {
   profileForm.notify_email = me.notify_email || ''
   profileForm.notify_sms_phone = me.notify_sms_phone || ''
   profileForm.notify_channel_id = me.notify_channel_id || null
+  profileForm.notify_target = me.notify_target || ''
   profileDlg.value = true
   await loadNotifyChannels()
 }

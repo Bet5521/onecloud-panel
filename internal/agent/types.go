@@ -57,16 +57,20 @@ type SystemctlReq struct {
 	Unit   string `json:"unit"`
 }
 
-// FileReq 文件读写。
+// FileReq 文件读写。二进制内容必须走 ContentB64，避免 JSON 字符串对非法
+// UTF-8 字节的替换（\ufffd）导致内容损坏（优先于 Content）。
 type FileReq struct {
-	Path    string `json:"path"`
-	Content string `json:"content,omitempty"`
+	Path       string `json:"path"`
+	Content    string `json:"content,omitempty"`
+	ContentB64 string `json:"content_b64,omitempty"`
 }
 
-// FileResp 文件内容。
+// FileResp 文件内容。二进制通过 ContentB64 传输；Content 仅在内容为合法
+// UTF-8 时填充，供人类可读的文本配置使用。
 type FileResp struct {
-	Path    string `json:"path"`
-	Content string `json:"content"`
+	Path       string `json:"path"`
+	Content    string `json:"content,omitempty"`
+	ContentB64 string `json:"content_b64,omitempty"`
 }
 
 // DownloadReq 下载到节点。

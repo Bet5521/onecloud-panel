@@ -13,10 +13,16 @@
             <el-tag size="small">{{ row.type_name || row.type }}</el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="状态" width="90">
+        <el-table-column label="状态" width="120">
           <template #default="{ row }">
-            <el-switch :model-value="row.enabled" :disabled="!can('settings:write')"
+            <el-switch :model-value="row.enabled" :disabled="!can('settings:write') || !row.configured"
               @change="(v) => toggleEnabled(row, v)" />
+            <div v-if="!row.configured" class="muted" style="font-size: 12px; margin-top: 2px">
+              未完成配置
+            </div>
+            <el-tooltip v-else-if="!row.enabled" content="启用后用户方可在个人资料中选择该通知方式" placement="top">
+              <span class="muted" style="font-size: 12px; margin-top: 2px">已停用</span>
+            </el-tooltip>
           </template>
         </el-table-column>
         <el-table-column label="最近测试" width="160">
@@ -71,7 +77,10 @@
         </template>
 
         <el-form-item label="启用">
-          <el-switch v-model="form.enabled" />
+          <el-switch v-model="form.enabled" :disabled="!formConfigured" />
+          <span v-if="!formConfigured" class="hint">
+            请先填写完整配置后才能启用（未配置的通道不会出现在用户的通知方式选项中）。
+          </span>
         </el-form-item>
       </el-form>
       <template #footer>
@@ -167,6 +176,34 @@ const currentFields = computed(() => {
   const provider = form.config.provider
   if (!provider) return []
   return [...(smsProviderFields[provider] || []), ...smsCommonFields]
+})
+
+// 与后端 notify.Build 等价的前端闸口：配置不完整时不允许启用。
+// 注意：编辑既有通道时密钥字段回显为 ******（非空），按"已填写"对待。
+const formConfigured = computed(() => {
+  const c = form.config || {}
+  const has = (k) => (c[k] || '').trim() !== ''
+  const https = (k) => (c[k] || '').startsWith('https://')
+  switch (form.type) {
+    case 'wxpusher':
+      return has('app_token')
+    case 'serverchan':
+      return has('sendkey')
+    case 'wecom':
+      return https('webhook')
+    case 'dingtalk':
+      return https('webhook')
+    case 'webhook':
+      return (c.url || '').startsWith('http://') || (c.url || '').startsWith('https://')
+    case 'sms': {
+      if (!has('provider') || !has('sign_name') || !has('template_code')) return false
+      if (c.provider === 'aliyun') return has('access_key_id') && has('access_key_secret')
+      if (c.provider === 'tencent') return has('secret_id') && has('secret_key') && has('app_id')
+      return true // 预留平台（华为云/百度云）：校验到签名/模板即可
+    }
+    default:
+      return false
+  }
 })
 
 function onTypeChange() {

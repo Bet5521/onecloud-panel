@@ -24,13 +24,13 @@ func (s *Store) CreateUserWithProfile(username, passwordHash string, roleID int6
 	return s.UserByID(id)
 }
 
-// UpdateUserNotify 更新用户级通知方式配置。
-func (s *Store) UpdateUserNotify(id int64, method, email, smsPhone string, channelID *int64) error {
+// UpdateUserNotify 更新用户级通知方式配置（含每用户接收标识）。
+func (s *Store) UpdateUserNotify(id int64, method, email, smsPhone string, channelID *int64, target *string) error {
 	_, err := s.DB.Exec(
 		`UPDATE users SET notify_method = ?, notify_email = ?, notify_sms_phone = ?,
-		   notify_channel_id = ?, updated_at = ?
+		   notify_channel_id = ?, notify_target = ?, updated_at = ?
 		 WHERE id = ?`,
-		method, email, smsPhone, channelID, now(), id)
+		method, email, smsPhone, channelID, target, now(), id)
 	return err
 }
 
@@ -71,6 +71,7 @@ func (s *Store) ListUsers() ([]User, error) {
 	rows, err := s.DB.Query(
 		`SELECT id, username, real_name, phone, password_hash, super_code, role_id, status,
 		        notify_method, notify_email, notify_sms_phone, notify_channel_id,
+		        notify_target,
 		        created_at, updated_at
 		 FROM users ORDER BY id`)
 	if err != nil {
@@ -82,7 +83,7 @@ func (s *Store) ListUsers() ([]User, error) {
 		var u User
 		if err := rows.Scan(&u.ID, &u.Username, &u.RealName, &u.Phone,
 			&u.PasswordHash, &u.SuperCode, &u.RoleID, &u.Status,
-			&u.NotifyMethod, &u.NotifyEmail, &u.NotifySMSPhone, &u.NotifyChannelID,
+			&u.NotifyMethod, &u.NotifyEmail, &u.NotifySMSPhone, &u.NotifyChannelID, &u.NotifyTarget,
 			&u.CreatedAt, &u.UpdatedAt); err != nil {
 			return nil, err
 		}

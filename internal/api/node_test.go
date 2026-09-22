@@ -237,7 +237,7 @@ func TestRotateTokenAgainstFakeAgent(t *testing.T) {
 	}))
 	defer agentSrv.Close()
 
-	id, err := svc.ManualAdd("测试节点", agentSrv.URL[7:], expectedBearer, "lan")
+	id, err := svc.ManualAdd("测试节点", agentSrv.URL[7:], expectedBearer, "lan", nil)
 	if err != nil {
 		t.Fatal(err)
 	}

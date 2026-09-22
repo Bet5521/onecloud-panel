@@ -33,6 +33,7 @@ type NodeDTO struct {
 	DockerMirrors            string `json:"docker_mirrors"`
 	DockerInsecureRegistries string `json:"docker_insecure_registries"`
 	LastSeen                 int64  `json:"last_seen"`
+	OwnerUserID              *int64 `json:"owner_user_id"`
 	Online                   bool   `json:"online"`
 	Reachable                bool   `json:"reachable"`
 }
@@ -45,8 +46,8 @@ func toDTO(n *store.Node) NodeDTO {
 		Kernel: n.Kernel, Arch: n.Arch, CPUCores: n.CPUCores,
 		MemTotal: n.MemTotal, Docker: n.DockerVersion,
 		DockerMirrors: n.DockerMirrors, DockerInsecureRegistries: n.DockerInsecureRegistries,
-		LastSeen: n.LastSeen,
-		Online:   n.Mode == "local" || node.IsOnline(n.LastSeen),
+		LastSeen: n.LastSeen, OwnerUserID: n.OwnerUserID,
+		Online: n.Mode == "local" || node.IsOnline(n.LastSeen),
 	}
 	if n.Address != "" {
 		d.Reachable = node.CheckReachability(n.Address, 2*time.Second)
@@ -88,7 +89,17 @@ func (a *API) agentHeartbeat(w http.ResponseWriter, r *http.Request) {
 // ---- 节点列表/详情 ----
 
 func (a *API) listNodes(w http.ResponseWriter, r *http.Request) {
-	nodes, err := a.nodes.List()
+	ident := auth.FromContext(r.Context())
+	callerID, isAdmin := callerInfo(ident)
+	var filter store.NodeListFilter
+	if !isAdmin {
+		// 非管理员仅能看到自己添加的节点（系统级 local 节点不可见）
+		filter.OwnerUserID = &callerID
+		filter.IncludeSystem = false
+	} else {
+		filter.IncludeSystem = true
+	}
+	nodes, err := a.nodes.ListFiltered(filter)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "查询失败")
 		return
@@ -122,6 +133,14 @@ func (a *API) getNode(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, err.Error())
 		return
 	}
+	// 可见性：非管理员不能查看他人添加的节点
+	if !callerIsAdmin(r) {
+		uid, _ := callerID(r)
+		if n.OwnerUserID == nil || *n.OwnerUserID != uid {
+			writeError(w, http.StatusNotFound, "节点不存在")
+			return
+		}
+	}
 	writeJSON(w, toDTO(n))
 }
 
@@ -136,6 +155,13 @@ func (a *API) nodeLiveInfo(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeError(w, http.StatusNotFound, "节点不存在")
 		return
+	}
+	if !callerIsAdmin(r) {
+		uid, _ := callerID(r)
+		if n.OwnerUserID == nil || *n.OwnerUserID != uid {
+			writeError(w, http.StatusNotFound, "节点不存在")
+			return
+		}
 	}
 	h, err := a.apps.InfoFor(r.Context(), n)
 	if err != nil {
@@ -160,7 +186,12 @@ func (a *API) manualAddNode(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "请求格式错误")
 		return
 	}
-	id, err := a.nodes.ManualAdd(req.Name, req.Address, req.Token, req.NetworkType)
+	var ownerID *int64
+	if ident := auth.FromContext(r.Context()); ident != nil && ident.User != nil {
+		v := ident.User.ID
+		ownerID = &v
+	}
+	id, err := a.nodes.ManualAdd(req.Name, req.Address, req.Token, req.NetworkType, ownerID)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return

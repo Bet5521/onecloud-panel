@@ -70,6 +70,12 @@ func Run(cfg *config.Panel) error {
 	appManager := apps.New(s, nodeSvc, recipeReg, box, asvc)
 	appManager.RegisterRunnerTasks(taskRunner)
 
+	// 自定义应用：注入二进制目录并向注册表补登合成配方
+	appManager.SetBinaryDir(filepath.Join(cfg.DataDir, "custom-apps"))
+	if err := appManager.RegisterCustomApps(); err != nil {
+		log.Printf("注册自定义应用配方失败: %v", err)
+	}
+
 	apiObj := api.New(s, authH, auth.NewMiddleware(sessions), asvc,
 		nodeSvc, recipeReg, taskRunner, appManager)
 

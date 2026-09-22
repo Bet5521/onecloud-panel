@@ -50,8 +50,12 @@ func (a *API) deliverByEmail(u *store.User, code string) (string, error) {
 }
 
 // deliverBySMS 向用户绑定手机号发送短信重置码；短信平台未配置时拒绝发送。
+// 优先使用用户个性化接收标识(NotifyTarget)，回退到旧手机号字段。
 func (a *API) deliverBySMS(u *store.User, code string) (string, error) {
-	phone := strings.TrimSpace(u.NotifySMSPhone)
+	phone := derefStr(u.NotifyTarget)
+	if phone == "" {
+		phone = strings.TrimSpace(u.NotifySMSPhone)
+	}
 	if phone == "" {
 		return "", errors.New("用户未绑定手机号")
 	}
@@ -113,6 +117,7 @@ func (a *API) deliverByChannel(u *store.User, code string) (string, error) {
 		Title: "OneCloud Panel 密码重置码",
 		Body:  "您正在重置 OneCloud Panel 登录密码。\n重置码：" + code + "\n有效期：15 分钟",
 		Code:  code,
+		To:    derefStr(u.NotifyTarget), // 个性化：按用户接收标识定向
 	}
 	if err := sender.Send(msg); err != nil {
 		return "", err

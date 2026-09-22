@@ -128,6 +128,12 @@ func (h *Handler) writeMe(w http.ResponseWriter, u *store.User) {
 	if u.NotifyChannelID != nil {
 		channelID = *u.NotifyChannelID
 	}
+	// 每用户个性化接收标识（WxPusher UID / 接收手机号 / Webhook 用户标识等），
+	// 必须回显，否则「个人资料 → 通知方式」无法回填已保存的标识。
+	notifyTarget := ""
+	if u.NotifyTarget != nil {
+		notifyTarget = *u.NotifyTarget
+	}
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"id":                u.ID,
 		"username":          u.Username,
@@ -137,6 +143,7 @@ func (h *Handler) writeMe(w http.ResponseWriter, u *store.User) {
 		"notify_email":      u.NotifyEmail,
 		"notify_sms_phone":  u.NotifySMSPhone,
 		"notify_channel_id": channelID,
+		"notify_target":     notifyTarget,
 		"role":              role.Code,
 		"role_name":         role.Name,
 		"permissions":       list,

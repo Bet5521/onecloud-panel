@@ -261,7 +261,7 @@ func (a *API) sshInstallTask(ctx context.Context, w io.Writer, t *store.Backgrou
 	n, err := a.waitNodeRegistered(ctx, w, before, sshInstallWait)
 	if err != nil {
 		_ = a.nodes.DeleteToken(p.TokenID)
-		return err
+		return fmt.Errorf("%w%s", err, a.noRegisterHint(p.Host))
 	}
 
 	name := p.NodeName
@@ -344,6 +344,46 @@ func (a *API) waitNodeRegistered(ctx context.Context, w io.Writer,
 				time.Until(deadline).Seconds()))
 		}
 	}
+}
+
+// agentStatePath 目标机 Agent 本地身份文件；非空即跳过注册（面板换址/重装后因而无法纳管）。
+const agentStatePath = "/var/lib/onecloud-panel-agent/agent.json"
+
+// noRegisterHint 补充「Agent 未产生新节点」的可操作诊断。
+// 优先指出该地址已纳管的节点（同一主机不会重复注册新节点）；否则提示目标机残留旧身份。
+func (a *API) noRegisterHint(host string) string {
+	if n := a.nodeByAddrHost(host); n != nil {
+		return fmt.Sprintf("；目标主机 %s 已纳管为节点 #%d（%s）——同一主机不会重复注册为新节点，"+
+			"如需重新纳管请先在节点列表删除该节点，并在目标机删除 %s 后重试",
+			host, n.ID, n.Name, agentStatePath)
+	}
+	return fmt.Sprintf("；若该主机此前安装过 Agent，请先删除目标机上的 %s"+
+		"（残留的旧注册身份会让 Agent 跳过注册）后重试", agentStatePath)
+}
+
+// nodeByAddrHost 按地址主机部分匹配既有节点；用于 SSH 添加失败后的精确诊断，匹配不上返回 nil。
+func (a *API) nodeByAddrHost(host string) *store.Node {
+	host = strings.TrimSpace(host)
+	if host == "" {
+		return nil
+	}
+	nodes, err := a.store.ListNodes()
+	if err != nil {
+		return nil
+	}
+	for i := range nodes {
+		addr := strings.TrimSpace(nodes[i].Address)
+		if addr == "" {
+			continue
+		}
+		if h, _, err := net.SplitHostPort(addr); err == nil {
+			addr = h
+		}
+		if strings.EqualFold(addr, host) {
+			return &nodes[i]
+		}
+	}
+	return nil
 }
 
 // ---- 安装命令与面板对外地址 ----

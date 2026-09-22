@@ -23,13 +23,32 @@ type User struct {
 	SuperCode    string
 	RoleID       int64
 	Status       string
-	// 通知方式：log / email / sms / channel
+	// 通知方式：log / channel（legacy email/sms 已并入通道体系）
 	NotifyMethod    string
 	NotifyEmail     string
 	NotifySMSPhone  string
 	NotifyChannelID *int64
-	CreatedAt       int64
-	UpdatedAt       int64
+	// NotifyTarget 每用户接收标识（如 WxPusher UID、短信手机号、Webhook Key），
+	// 用于通过所选通道做个性化定向下发。可为空（NULL）。
+	NotifyTarget *string
+	CreatedAt    int64
+	UpdatedAt    int64
+}
+
+// CustomApp 用户自定义应用。
+type CustomApp struct {
+	ID          int64
+	Type        string // github / docker / binary
+	Name        string
+	Category    string
+	Icon        string
+	Description string
+	Homepage    string
+	ConfigJSON  string
+	OwnerUserID *int64 // 创建者；NULL=系统级(管理员)
+	CreatedBy   *int64
+	CreatedAt   int64
+	UpdatedAt   int64
 }
 
 // Node 集群节点。
@@ -53,6 +72,7 @@ type Node struct {
 	DockerMirrors            string
 	DockerInsecureRegistries string
 	LastSeen                 int64
+	OwnerUserID              *int64 // 节点归属用户；NULL=系统节点(如 local)，仅管理员可见
 	CreatedAt                int64
 	UpdatedAt                int64
 }

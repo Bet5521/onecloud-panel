@@ -16,3 +16,14 @@ web/node_modules/
 # Logs & temp
 *.log
 *.tmp
+
+# Runtime data dirs（含 secret.key / panel.db / 发布二进制 / 证书私钥，禁止入库）
+runtime-data*/
+runtime-agent*/
+
+# 本地抓取物与临时脚本
+cookies.txt
+_ip.txt
+_dltest
+tmp_demo/
+*.exe~

@@ -244,13 +244,19 @@ systemctl restart docker
 | `ProtectKernelModules=true` | 禁止加载/卸载内核模块 |
 | `ProtectKernelLogs=true` | 禁止读取内核日志 |
 | `ProtectControlGroups=true` | 禁止修改 cgroup |
-| `RestrictSUIDSGID=true` | 禁止创建 SUID/SGID 文件 |
 | `LockPersonality=true` | 锁定执行域 |
 | `ProtectHostname=true` | 禁止修改主机名 |
 | `RestrictRealtime=true` | 禁止实时调度 |
 | `SystemCallArchitectures=native` | 仅允许原生系统调用 |
 
 > 未启用 `ProtectSystem=strict`：面板需管理 `/etc`（应用配置）、`/var`（数据目录）、systemd、docker。
+
+> **未启用 `RestrictSUIDSGID`**：面板/Agent 要代跑 `apt`/`dpkg`，而部分 Debian 包的
+> postinst 会给自己创建的目录设置 setuid/setgid 位（例如 transmission-daemon 执行
+> `chmod 4750 /var/lib/transmission-daemon/.config/transmission-daemon`）。启用该
+> 限制会让这类 `chmod` 直接返回 EPERM（`Operation not permitted`），导致 dpkg
+> 配置阶段失败、包卡在 `iF`（half-configured）状态。此项加固与"代管包管理器"
+> 这一核心职责冲突，故不启用。
 
 ### 8.2 凭据文件权限
 

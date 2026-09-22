@@ -24,7 +24,16 @@ type Client struct {
 	baseURL string
 	token   string
 	http    *http.Client
+	// execHTTP 用于执行类请求（/v1/exec）。安装步骤里的 apt-get / dpkg /
+	// systemctl 在低配 ARM 节点上常需数分钟，控制面的 30s 上限会把正常安装
+	// 判成失败（表现为 "context deadline exceeded (Client.Timeout exceeded
+	// while awaiting headers)"）。这里取与 ops/download 一致的 30 分钟预算，
+	// 仍留一个上界，避免 Agent 失联时任务永久挂起。
+	execHTTP *http.Client
 }
+
+// execTimeout 执行类请求的客户端超时上限。
+const execTimeout = 30 * time.Minute
 
 // New 创建客户端，address 为 host:port。
 func New(address, token string) *Client {
@@ -33,13 +42,19 @@ func New(address, token string) *Client {
 		base = "http://" + base
 	}
 	return &Client{
-		baseURL: strings.TrimRight(base, "/"),
-		token:   token,
-		http:    &http.Client{Timeout: 30 * time.Second},
+		baseURL:  strings.TrimRight(base, "/"),
+		token:    token,
+		http:     &http.Client{Timeout: 30 * time.Second},
+		execHTTP: &http.Client{Timeout: execTimeout},
 	}
 }
 
 func (c *Client) req(ctx context.Context, method, path string, body any) (*http.Response, error) {
+	return c.do(c.http, ctx, method, path, body)
+}
+
+// do 用指定 client 发起带鉴权的 JSON 请求。
+func (c *Client) do(hc *http.Client, ctx context.Context, method, path string, body any) (*http.Response, error) {
 	var rdr io.Reader
 	if body != nil {
 		b, err := json.Marshal(body)
@@ -56,7 +71,7 @@ func (c *Client) req(ctx context.Context, method, path string, body any) (*http.
 		req.Header.Set("Content-Type", "application/json")
 	}
 	req.Header.Set("Authorization", "Bearer "+c.token)
-	return c.http.Do(req)
+	return hc.Do(req)
 }
 
 // Info GET /v1/info — 实时主机信息与资源水位。
@@ -94,9 +109,19 @@ func (c *Client) Health(ctx context.Context) error {
 	return nil
 }
 
-// Exec 执行命令并获取完整结果。
+// Exec 执行命令并获取完整结果（控制面超时，30s）。
 func (c *Client) Exec(ctx context.Context, name string, args ...string) (*executor.Result, error) {
-	resp, err := c.req(ctx, http.MethodPost, "/v1/exec",
+	return c.execCall(ctx, c.http, name, args...)
+}
+
+// ExecLong 执行耗时较长的命令（安装步骤：apt-get / dpkg / systemctl 等）。
+// 实现 executor.LongRunner，供步骤执行器识别；超时上限见 execTimeout。
+func (c *Client) ExecLong(ctx context.Context, name string, args ...string) (*executor.Result, error) {
+	return c.execCall(ctx, c.execHTTP, name, args...)
+}
+
+func (c *Client) execCall(ctx context.Context, hc *http.Client, name string, args ...string) (*executor.Result, error) {
+	resp, err := c.do(hc, ctx, http.MethodPost, "/v1/exec",
 		agent.ExecReq{Command: name, Args: args})
 	if err != nil {
 		return nil, err

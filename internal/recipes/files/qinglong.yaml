@@ -1,0 +1,27 @@
+api_version: 1
+id: qinglong
+name: 青龙面板
+category: 效率
+icon: list
+description: 定时任务管理面板，支持 Python3 / JavaScript / Shell / TypeScript 脚本与依赖管理，常用于签到、薅羊毛等自动化任务。首次访问 5700 端口设置管理员账号。
+homepage: https://github.com/whyour/qinglong
+methods: [docker]
+ports:
+  - {port: 5700, proto: tcp, description: Web 面板}
+healthcheck: {type: tcp, port: 5700}
+docker:
+  arches: [armv7l, aarch64, x86_64]
+  # 多架构官方镜像：amd64 / arm64 / armv7 均有构建。
+  image: whyour/qinglong:latest
+  ports: ["5700:5700"]
+  volumes:
+    - /var/lib/qinglong/data:/ql/data
+  env:
+    - ENABLE_HANGUP=true
+    - ENABLE_WEB_PANEL=true
+    - TZ=Asia/Shanghai
+  install_steps:
+    - name: 建数据目录
+      mkdir: [/var/lib/qinglong/data]
+    - name: 确保 libseccomp2（armv7 上青龙运行所需，已安装则跳过）
+      apt: [libseccomp2]

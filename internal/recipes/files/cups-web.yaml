@@ -1,0 +1,40 @@
+api_version: 1
+id: cups-web
+name: CUPS Web 打印
+category: 外设
+icon: printer
+description: 自带 CUPS 的网页打印服务：浏览器上传文件即可打印，内置 Office→PDF 转换，支持多用户登录。使用 host 网络以便 mDNS/AirPrint 广播，因此会直接占用 631（与「CUPS 打印服务」互斥，两者只装其一）与 1180 端口。
+homepage: https://github.com/hanxi/cups-web
+methods: [docker]
+ports:
+  - {port: 1180, proto: tcp, description: Web 界面}
+  - {port: 631, proto: tcp, description: 容器内置 CUPS（host 网络下直接占用）}
+healthcheck: {type: http, port: 1180, path: /}
+variables:
+  - {key: cups_admin, name: CUPS 管理员账号, type: string, default: print}
+  - {key: cups_password, name: CUPS 管理员密码, type: string, default: print, description: 安装后请立即修改}
+  - {key: tz, name: 时区, type: string, default: Asia/Shanghai}
+docker:
+  arches: [armv7l, aarch64, x86_64]
+  image: hanxi/cups-web:latest
+  # 需要 host 网络：mDNS/DNS-SD 依赖组播，桥接下发现不了网络打印机、AirPrint 也广播不出去。
+  network_mode: host
+  # 访问 USB 打印机设备与写入 CUPS 运行目录需要较宽权限（官方 compose 用 apparmor:unconfined）。
+  privileged: true
+  volumes:
+    - /var/lib/cups-web/etc:/etc/cups
+    - /var/lib/cups-web/data:/data
+    - /var/lib/cups-web/uploads:/uploads
+    - /var/lib/cups-web/drivers:/opt/cups-drivers/data
+    - /var/lib/cups-web/scans:/scans
+  env:
+    - CUPSADMIN={{.Vars.cups_admin}}
+    - CUPSPASSWORD={{.Vars.cups_password}}
+    - TZ={{.Vars.tz}}
+    - LISTEN_ADDR=:1180
+  install_steps:
+    - name: 准备数据目录
+      mkdir: [/var/lib/cups-web/etc, /var/lib/cups-web/data, /var/lib/cups-web/uploads, /var/lib/cups-web/drivers, /var/lib/cups-web/scans]
+config_files:
+  - {path: /var/lib/cups-web/etc/cupsd.conf, optional: true, description: CUPS 主配置}
+  - {path: /var/lib/cups-web/etc/printers.conf, optional: true, description: 打印机配置}

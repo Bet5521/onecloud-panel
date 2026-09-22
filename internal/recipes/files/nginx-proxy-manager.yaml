@@ -1,0 +1,27 @@
+api_version: 1
+id: nginx-proxy-manager
+name: Nginx Proxy Manager（NPM）
+category: 网络
+icon: server
+description: 带图形界面的 Nginx 反向代理管理，可一键申请 Let's Encrypt 证书、配置域名转发与访问控制。管理界面在 81 端口（默认 admin@example.com / changeme，首次登录强制修改）。会占用 80 与 443，请勿与其它需要这两个端口的应用同时安装。
+homepage: https://github.com/NginxProxyManager/nginx-proxy-manager
+methods: [docker]
+ports:
+  - {port: 80, proto: tcp, description: HTTP 转发入口}
+  - {port: 81, proto: tcp, description: 管理界面}
+  - {port: 443, proto: tcp, description: HTTPS 转发入口}
+healthcheck: {type: tcp, port: 81}
+docker:
+  arches: [armv7l, aarch64, x86_64]
+  # 官方镜像自 2.12 起不再构建 armv7 变体，故按节点架构选择 tag。
+  image: 'jc21/nginx-proxy-manager:{{if eq .Node.Arch "armv7l"}}2.11.3{{else}}latest{{end}}'
+  ports: ["80:80", "81:81", "443:443"]
+  volumes:
+    - /var/lib/npm/data:/data
+    - /var/lib/npm/letsencrypt:/etc/letsencrypt
+  env:
+    - DISABLE_IPV6=true
+    - TZ=Asia/Shanghai
+  install_steps:
+    - name: 建数据目录
+      mkdir: [/var/lib/npm/data, /var/lib/npm/letsencrypt]

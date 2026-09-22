@@ -26,6 +26,15 @@ type Executor interface {
 	Exists(path string) (bool, error)
 }
 
+// LongRunner 可选能力：执行耗时较长的命令。
+//
+// 安装类步骤（apt-get install / dpkg / systemctl start 重服务）在低配 ARM 节点上
+// 动辄数分钟，远超远程执行器控制面请求的超时预算。执行器实现该接口后，步骤执行器
+// 会优先调用 ExecLong；未实现时回落为普通 Exec，行为不变。
+type LongRunner interface {
+	ExecLong(ctx context.Context, name string, args ...string) (*Result, error)
+}
+
 // Local 本机执行器。
 type Local struct {
 	guard *Guard
@@ -33,6 +42,12 @@ type Local struct {
 
 // NewLocal 创建本机执行器；guard 为 nil 表示不限制（仅限内部受信调用）。
 func NewLocal(guard *Guard) *Local { return &Local{guard: guard} }
+
+// ExecLong 本机执行无额外超时上限（由 ctx 控制），与 Exec 等价，
+// 仅用于满足 LongRunner 接口，让同一份步骤代码在本机/远程节点上行为一致。
+func (l *Local) ExecLong(ctx context.Context, name string, args ...string) (*Result, error) {
+	return l.Exec(ctx, name, args...)
+}
 
 func (l *Local) Exec(ctx context.Context, name string, args ...string) (*Result, error) {
 	cmd := exec.CommandContext(ctx, name, args...)

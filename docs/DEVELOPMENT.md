@@ -129,6 +129,11 @@ docker:
   image: example/myapp:latest
   ports: ["8080:8080"]
   volumes: [/var/lib/myapp:/data]
+  # 可选：容器内运行身份（UID 或 UID:GID）。
+  # 部分镜像已移除 PUID/PGID 环境变量（如 OpenList v4.1.0+ 固定以 openlist(1001)
+  # 运行），必须靠它指定为 root 才能写入属主为 root 的宿主绑定目录，否则容器会因
+  # “没有 ./data 目录的写权限”反复重启。
+  user: "0:0"
 ```
 
 原生（systemd 直装）配方关键字段（见 types.go）：

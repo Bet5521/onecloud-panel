@@ -324,11 +324,36 @@ func validateDocker(r *Recipe) error {
 	if err := ValidateTemplate(r, d.Image, "docker.image"); err != nil {
 		return err
 	}
+	if err := validateDockerUser(r.ID, d.User); err != nil {
+		return err
+	}
 	if err := validateSteps(r, "docker.install_steps", d.InstallSteps); err != nil {
 		return err
 	}
 	if err := validateSteps(r, "docker.uninstall_steps", d.UninstallSteps); err != nil {
 		return err
+	}
+	return nil
+}
+
+// validateDockerUser 校验 docker.user 的基本形态。
+// Docker 允许 "uid"、"uid:gid"、"name"、"name:group" 四种写法，故不做纯数字限制，
+// 只拦掉空白与空段这类必然导致 docker create 失败的写法。
+func validateDockerUser(id, user string) error {
+	if user == "" {
+		return nil
+	}
+	if strings.ContainsAny(user, " \t\r\n") {
+		return fmt.Errorf("配方 %s: docker.user %q 含空白字符", id, user)
+	}
+	parts := strings.Split(user, ":")
+	if len(parts) > 2 {
+		return fmt.Errorf("配方 %s: docker.user %q 格式非法（应为 UID 或 UID:GID）", id, user)
+	}
+	for _, p := range parts {
+		if p == "" {
+			return fmt.Errorf("配方 %s: docker.user %q 存在空段", id, user)
+		}
 	}
 	return nil
 }

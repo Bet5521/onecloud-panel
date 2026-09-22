@@ -110,8 +110,12 @@ type Systemctl struct {
 
 // DockerSpec 容器方式规格。
 type DockerSpec struct {
-	Arches         []string `yaml:"arches"`
-	Image          string   `yaml:"image"`
+	Arches []string `yaml:"arches"`
+	Image  string   `yaml:"image"`
+	// User 指定容器内运行身份（UID 或 UID:GID）。部分镜像已移除 PUID/PGID
+	// 环境变量，例如 OpenList v4.1.0+ 固定以 openlist(1001) 运行并废弃了
+	// PUID/PGID，此时只能靠本字段以 root 运行才能写入宿主绑定目录。
+	User           string   `yaml:"user"`
 	Ports          []string `yaml:"ports"`
 	Volumes        []string `yaml:"volumes"`
 	Env            []string `yaml:"env"`

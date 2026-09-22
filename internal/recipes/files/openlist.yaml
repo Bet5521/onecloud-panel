@@ -1,0 +1,28 @@
+api_version: 1
+id: openlist
+name: OpenList
+category: 文件
+icon: hard-drive
+description: Alist 的社区分支（原项目被收购后由社区接续），排除遥测、支持 80+ 存储驱动，配置与 Alist 兼容可直接迁移数据。首次启动的管理员密码需查看应用日志。
+homepage: https://github.com/OpenListTeam/OpenList
+methods: [docker]
+ports:
+  - {port: 5245, proto: tcp, description: Web 界面}
+healthcheck: {type: tcp, port: 5245}
+docker:
+  arches: [armv7l, aarch64, x86_64]
+  image: openlistteam/openlist:latest
+  # v4.1.0 起镜像移除了 PUID/PGID，固定以 openlist(1001) 运行，直接跑会因为
+  # 宿主目录属主是 root 而报「没有 ./data 目录的写权限」并反复重启。
+  # 官方 compose 的默认解法就是指定 user，这里与之一致。
+  user: "0:0"
+  # 宿主 5245 → 容器 5244，便于与 Alist 并存。
+  ports: ["5245:5244"]
+  volumes:
+    - /var/lib/openlist/data:/opt/openlist/data
+  env:
+    - UMASK=022
+    - TZ=Asia/Shanghai
+  install_steps:
+    - name: 建数据目录
+      mkdir: [/var/lib/openlist/data]

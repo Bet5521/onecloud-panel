@@ -86,13 +86,18 @@ enable_now() {
 
 # 公共安全加固段：面板/Agent 均为 root 运行的系统管理服务，
 # 需保留对 /etc、/var、systemd、docker 的管理权限，故不启用 ProtectSystem=strict。
+#
+# 注意：不启用 RestrictSUIDSGID。面板/Agent 要代跑 apt/dpkg，而部分 Debian 包的
+# postinst 会给自己创建的目录设置 setuid/setgid 位（如 transmission-daemon 的
+# `chmod 4750 /var/lib/transmission-daemon/.config/transmission-daemon`）。
+# 该限制会让这类 chmod 直接返回 EPERM（报错 "Operation not permitted"），
+# 使 dpkg 配置阶段失败、包卡在 iF（half-configured）状态。
 SECURITY_HARDENING="NoNewPrivileges=true
 PrivateTmp=true
 ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectKernelLogs=true
 ProtectControlGroups=true
-RestrictSUIDSGID=true
 LockPersonality=true
 ProtectHostname=true
 RestrictRealtime=true

@@ -67,7 +67,7 @@ func (m *Manager) InstallDocker(ctx context.Context, w io.Writer, nodeID int64) 
 
 	run := func(step, script string) error {
 		fmt.Fprintf(w, "→ %s\n", step)
-		r, err := ex.Exec(ctx, "sh", "-c", script)
+		r, err := execLong(ctx, ex, "sh", "-c", script)
 		if err != nil {
 			return fmt.Errorf("%s: %w", step, err)
 		}

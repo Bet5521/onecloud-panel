@@ -1,0 +1,39 @@
+api_version: 1
+id: qbittorrent
+name: qBittorrent
+category: 下载
+icon: download-cloud
+description: 开源 BT 下载客户端，自带 Web 管理界面（无桌面依赖）。首次启动由镜像生成一次性临时密码并打印在容器日志里，请在应用详情页查看日志获取后用 admin 登录，并及时在 WebUI 中修改密码。已在容器内声明确认法律声明，仅用于合法内容下载。
+homepage: https://github.com/qbittorrent/docker-qbittorrent-nox
+methods: [docker]
+ports:
+  - {port: 8082, proto: tcp, description: Web 界面}
+  - {port: 6881, proto: tcp, description: BT 连接端口}
+  - {port: 6881, proto: udp, description: BT DHT/μTP}
+healthcheck: {type: tcp, port: 8082}
+variables:
+  - {key: tz, name: 时区, type: string, default: Asia/Shanghai}
+docker:
+  arches: [armv7l, aarch64, x86_64]
+  image: qbittorrentofficial/qbittorrent-nox:latest
+  ports:
+    - "8082:8080"
+    - "6881:6881/tcp"
+    - "6881:6881/udp"
+  volumes:
+    - /var/lib/qbittorrent/config:/config
+    - /var/lib/qbittorrent/downloads:/downloads
+  env:
+    # 官方镜像要求显式接受法律声明，否则容器直接退出。
+    - QBT_LEGAL_NOTICE=confirm
+    # 该镜像没有任何「设置 WebUI 账号密码」的环境变量（仅 QBT_LEGAL_NOTICE /
+    # QBT_VERSION / QBT_TORRENTING_PORT / QBT_WEBUI_PORT / PUID / PGID 等）。
+    # qBittorrent ≥ 4.6.1 会在首次启动时生成临时密码写入容器日志，只能从日志取。
+    - QBT_WEBUI_PORT=8080
+    - QBT_TORRENTING_PORT=6881
+    - PUID=0
+    - PGID=0
+    - TZ={{.Vars.tz}}
+  install_steps:
+    - name: 建数据与下载目录
+      mkdir: [/var/lib/qbittorrent/config, /var/lib/qbittorrent/downloads]

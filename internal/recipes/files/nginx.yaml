@@ -1,0 +1,60 @@
+api_version: 1
+id: nginx
+name: Nginx
+category: 网络
+icon: globe
+description: 官方 Nginx 容器，用于托管静态站点或作为反向代理。默认监听宿主 8088 端口，站点根目录与 conf.d 配置目录都挂载在宿主 /var/lib/nginx 下，可直接在面板里编辑配置文件（conf.d 已挂载到宿主，是配置的唯一来源，请勿把 default.conf 清空或删除，否则 nginx 将不再监听端口）。
+homepage: https://nginx.org
+methods: [docker]
+ports:
+  - {port: 8088, proto: tcp, description: HTTP}
+healthcheck: {type: http, port: 8088, path: /}
+config_files:
+  - {path: /var/lib/nginx/conf.d/default.conf, optional: true, description: 站点/反向代理配置}
+docker:
+  arches: [armv7l, aarch64, x86_64]
+  image: nginx:alpine
+  ports: ["8088:80"]
+  volumes:
+    - /var/lib/nginx/html:/usr/share/nginx/html
+    - /var/lib/nginx/conf.d:/etc/nginx/conf.d
+  env:
+    - TZ=Asia/Shanghai
+  install_steps:
+    - name: 建站点目录
+      mkdir: [/var/lib/nginx/html, /var/lib/nginx/conf.d]
+    - name: 写默认站点配置（挂载 conf.d 会覆盖镜像自带配置，必须补一份，否则 nginx 不监听 80）
+      write:
+        path: /var/lib/nginx/conf.d/default.conf
+        mode: 0644
+        content: |
+          server {
+            listen 80;
+            server_name _;
+            root /usr/share/nginx/html;
+            index index.html;
+            location / {
+              try_files $uri $uri/ =404;
+            }
+          }
+    - name: 写默认首页（避免挂载后目录为空）
+      write:
+        path: /var/lib/nginx/html/index.html
+        mode: 0644
+        content: |
+          <!doctype html>
+          <html lang="zh-CN">
+            <head>
+              <meta charset="utf-8">
+              <title>Nginx 已就绪</title>
+              <style>
+                body { font-family: system-ui, sans-serif; margin: 4rem auto; max-width: 42rem; line-height: 1.7; color: #222; }
+                code { background: #f4f4f5; padding: .15rem .4rem; border-radius: 4px; }
+              </style>
+            </head>
+            <body>
+              <h1>Nginx 已就绪</h1>
+              <p>把静态文件放进宿主 <code>/var/lib/nginx/html</code>，或编辑
+                 <code>/var/lib/nginx/conf.d/default.conf</code> 配置反向代理，重启应用后生效。</p>
+            </body>
+          </html>

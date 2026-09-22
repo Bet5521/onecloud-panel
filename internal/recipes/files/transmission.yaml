@@ -1,0 +1,72 @@
+api_version: 1
+id: transmission
+name: Transmission
+category: 下载
+icon: download
+description: 轻量 BT 下载守护进程，Web 管理界面在 9091 端口。采用系统包直装（Debian/Ubuntu 全架构可用，armv7 设备上比容器更省内存）。默认账号 admin / admin，请登录后在设置中修改。
+homepage: https://github.com/transmission/transmission
+methods: [native]
+ports:
+  - {port: 9091, proto: tcp, description: Web 界面}
+  - {port: 51413, proto: tcp, description: BT 连接端口}
+  - {port: 51413, proto: udp, description: DHT / μTP}
+healthcheck: {type: tcp, port: 9091}
+volumes:
+  - /var/lib/transmission-daemon
+config_files:
+  - {path: /etc/transmission-daemon/settings.json, description: 主配置（保存后需重启应用）}
+variables:
+  - {key: rpc_user, name: Web 用户名, type: string, default: admin}
+  - {key: rpc_password, name: Web 密码, type: string, default: admin, description: 安装后请立即修改}
+native:
+  arches: [armv7l, aarch64, x86_64, i386]
+  unit_name: transmission-daemon.service
+  # 日志级别参数在各版本间不兼容：3.x 是 `--log-error`（布尔开关），4.x 改成
+  # `--log-level=error`；写错会让守护进程打印用法后直接退出，表现为 systemd
+  # 报 "Failed with result 'protocol'"。这里索性不传日志参数，交给默认值。
+  unit_template: |
+    [Unit]
+    Description=Transmission BitTorrent Daemon
+    After=network-online.target
+    Wants=network-online.target
+    [Service]
+    User=debian-transmission
+    Type=notify
+    ExecStart=/usr/bin/transmission-daemon -f
+    ExecStop=/bin/kill -s STOP $MAINPID
+    ExecReload=/bin/kill -s HUP $MAINPID
+    NoNewPrivileges=true
+    Restart=on-failure
+    RestartSec=5s
+    [Install]
+    WantedBy=multi-user.target
+  install_steps:
+    - name: 安装 transmission-daemon
+      apt: [transmission-daemon]
+    - name: 停掉软件包自启的守护进程（随后由面板统一起停）
+      exec: {command: sh, args: ["-c", "systemctl stop transmission-daemon.service 2>/dev/null || true"]}
+    - name: 写 settings.json（开放 9091 并启用认证）
+      write:
+        path: /etc/transmission-daemon/settings.json
+        mode: 0640
+        content: |
+          {
+            "download-dir": "/var/lib/transmission-daemon/downloads",
+            "incomplete-dir": "/var/lib/transmission-daemon/incomplete",
+            "incomplete-dir-enabled": false,
+            "peer-port": 51413,
+            "peer-port-random-on-start": false,
+            "port-forwarding-enabled": true,
+            "rpc-authentication-required": true,
+            "rpc-bind-address": "0.0.0.0",
+            "rpc-enabled": true,
+            "rpc-password": "{{.Vars.rpc_password}}",
+            "rpc-port": 9091,
+            "rpc-username": "{{.Vars.rpc_user}}",
+            "rpc-whitelist-enabled": false,
+            "umask": 2,
+            "watch-dir-enabled": false
+          }
+    - name: 修正配置属主（保证守护进程可回写）
+      exec: {command: chown, args: ["debian-transmission:debian-transmission", "/etc/transmission-daemon/settings.json"]}
+  uninstall_steps: []

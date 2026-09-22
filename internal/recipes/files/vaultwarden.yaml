@@ -1,0 +1,30 @@
+api_version: 1
+id: vaultwarden
+name: Vaultwarden
+category: 安全
+icon: lock
+description: 轻量级 Bitwarden 服务端实现（Rust），兼容官方客户端与浏览器扩展，内存占用远低于官方版。使用前请务必配置 HTTPS 反向代理，否则客户端无法正常同步。
+homepage: https://github.com/dani-garcia/vaultwarden
+methods: [docker]
+ports:
+  - {port: 8081, proto: tcp, description: Web 界面}
+healthcheck: {type: http, port: 8081, path: /alive}
+variables:
+  - {key: signups_allowed, name: 允许注册, type: select, default: "true", options: ["true", "false"], description: 注册完自己的账号后建议改为 false}
+  - {key: admin_token, name: Admin 页面令牌, type: string, default: "", description: 留空则关闭 /admin 管理页面}
+  - {key: tz, name: 时区, type: string, default: Asia/Shanghai}
+docker:
+  arches: [armv7l, aarch64, x86_64]
+  # 官方镜像提供 amd64 / arm64 / armv7 / armv6 构建。
+  image: vaultwarden/server:latest
+  ports: ["8081:80"]
+  volumes:
+    - /var/lib/vaultwarden:/data
+  env:
+    - SIGNUPS_ALLOWED={{.Vars.signups_allowed}}
+    - ADMIN_TOKEN={{.Vars.admin_token}}
+    - WEBSOCKET_ENABLED=true
+    - TZ={{.Vars.tz}}
+  install_steps:
+    - name: 建数据目录
+      mkdir: [/var/lib/vaultwarden]

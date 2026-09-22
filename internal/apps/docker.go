@@ -35,6 +35,7 @@ var engineArchGO = map[string]string{
 
 type createContainer struct {
 	Image        string              `json:"Image"`
+	User         string              `json:"User,omitempty"`
 	Env          []string            `json:"Env,omitempty"`
 	ExposedPorts map[string]struct{} `json:"ExposedPorts"`
 	HostConfig   hostConfig          `json:"HostConfig"`
@@ -192,6 +193,7 @@ func buildCreateBody(imageRef string, ds *recipes.DockerSpec,
 	rendered *recipes.RenderedRecipe) ([]byte, error) {
 	cc := createContainer{
 		Image:        imageRef,
+		User:         ds.User,
 		Env:          ds.Env,
 		ExposedPorts: map[string]struct{}{},
 		HostConfig: hostConfig{

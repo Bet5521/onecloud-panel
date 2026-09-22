@@ -1,0 +1,25 @@
+api_version: 1
+id: alist
+name: Alist
+category: 文件
+icon: hard-drive
+description: 多存储文件列表程序，把阿里云盘、百度网盘、OneDrive、本地磁盘等挂载到统一 Web 界面，支持 WebDAV 与离线下载。首次启动的管理员密码需查看应用日志。注意：Alist 已被收购并有遥测争议，可改用社区分支 OpenList。
+homepage: https://github.com/xhofe/alist
+methods: [docker]
+ports:
+  - {port: 5244, proto: tcp, description: Web 界面}
+healthcheck: {type: tcp, port: 5244}
+docker:
+  arches: [armv7l, aarch64, x86_64]
+  image: xhofe/alist:latest
+  ports: ["5244:5244"]
+  volumes:
+    - /var/lib/alist/data:/opt/alist/data
+  env:
+    - PUID=0
+    - PGID=0
+    - UMASK=022
+    - TZ=Asia/Shanghai
+  install_steps:
+    - name: 建数据目录
+      mkdir: [/var/lib/alist/data]

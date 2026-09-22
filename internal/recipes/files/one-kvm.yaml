@@ -1,0 +1,32 @@
+api_version: 1
+id: one-kvm
+name: One-KVM
+category: 运维
+icon: monitor
+description: 基于 PiKVM 的硬件级远程控制方案，把玩客云 + HDMI 采集卡 + USB OTG 变成 BIOS 级 IP-KVM，可远程看画面、控键鼠、挂载虚拟介质。使用 host 网络，默认只监听 8080（Web）；4430（HTTPS）、5900（VNC）、623（IPMI）需在 Web 界面里开启后才会监听。请勿与占用 8080 的应用（例如同节点的面板本体）同时安装。硬件上需先接好采集卡与 USB 双公线，并在系统侧使能 OTG 端口（`ls /sys/class/udc` 有输出才可用），否则鼠键模拟无法工作。
+homepage: https://github.com/mofeng-git/One-KVM
+methods: [docker]
+ports:
+  - {port: 8080, proto: tcp, description: Web 界面}
+  - {port: 4430, proto: tcp, description: HTTPS 界面}
+  - {port: 5900, proto: tcp, description: VNC}
+  - {port: 623, proto: tcp, description: IPMI}
+healthcheck: {type: tcp, port: 8080}
+docker:
+  arches: [armv7l, aarch64, x86_64]
+  image: silentwind0/one-kvm:latest
+  # host 网络：WebRTC 低延迟视频与局域网发现需要直接使用宿主网络。
+  network_mode: host
+  # 需访问采集卡与 OTG gadget 设备、configfs、内核模块，官方要求特权模式。
+  privileged: true
+  # /dev 与 /sys 为官方文档明确要求且不可省略的挂载（硬件访问必需）。
+  volumes:
+    - /dev:/dev
+    - /sys:/sys
+    - /lib/modules:/lib/modules:ro
+    - /var/lib/one-kvm:/etc/one-kvm
+  env:
+    - TZ=Asia/Shanghai
+  install_steps:
+    - name: 建配置与数据目录
+      mkdir: [/var/lib/one-kvm]

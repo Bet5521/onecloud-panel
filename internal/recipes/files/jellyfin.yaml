@@ -1,0 +1,26 @@
+api_version: 1
+id: jellyfin
+name: Jellyfin
+category: 多媒体
+icon: film
+description: 开源自建媒体服务器，管理电影、剧集、音乐并支持多端播放。官方镜像已不再提供 armv7 版本，armv7 设备（如玩客云）无法以容器方式安装。首次访问 8096 端口完成初始化向导。
+homepage: https://jellyfin.org
+methods: [docker]
+ports:
+  - {port: 8096, proto: tcp, description: Web 界面}
+healthcheck: {type: tcp, port: 8096}
+docker:
+  arches: [aarch64, x86_64]
+  image: jellyfin/jellyfin:latest
+  ports: ["8096:8096"]
+  volumes:
+    - /var/lib/jellyfin/config:/config
+    - /var/lib/jellyfin/cache:/cache
+    - /var/lib/jellyfin/media:/media
+  env:
+    - PUID=0
+    - PGID=0
+    - TZ=Asia/Shanghai
+  install_steps:
+    - name: 建数据与媒体目录
+      mkdir: [/var/lib/jellyfin/config, /var/lib/jellyfin/cache, /var/lib/jellyfin/media]

@@ -281,15 +281,24 @@ func (m *Manager) runSteps(ctx context.Context, w io.Writer, ex executor.Executo
 	return nil
 }
 
+// execLong 优先使用执行器的长任务能力（executor.LongRunner），
+// 未实现时回落为普通 Exec。用于 apt/dpkg/systemctl 等可能耗时数分钟的步骤。
+func execLong(ctx context.Context, ex executor.Executor, name string, args ...string) (*executor.Result, error) {
+	if lr, ok := ex.(executor.LongRunner); ok {
+		return lr.ExecLong(ctx, name, args...)
+	}
+	return ex.Exec(ctx, name, args...)
+}
+
 func execOneStep(ctx context.Context, w io.Writer, ex executor.Executor, s recipes.Step, proxy string) error {
 	switch {
 	case len(s.Apt) > 0:
 		// 先更新索引（轻量提示），再非推荐安装
-		if _, err := ex.Exec(ctx, "apt-get", "update", "-qq"); err != nil {
+		if _, err := execLong(ctx, ex, "apt-get", "update", "-qq"); err != nil {
 			fmt.Fprintf(w, "  apt update 警告: %v\n", err)
 		}
 		args := append([]string{"install", "-y", "--no-install-recommends"}, s.Apt...)
-		r, err := ex.Exec(ctx, "apt-get", args...)
+		r, err := execLong(ctx, ex, "apt-get", args...)
 		if err != nil {
 			return err
 		}
@@ -322,7 +331,7 @@ func execOneStep(ctx context.Context, w io.Writer, ex executor.Executor, s recip
 		}
 		_, _ = ex.Exec(ctx, "chmod", strconv.FormatUint(uint64(mode.Perm()), 8), s.Write.Path)
 	case s.Exec != nil:
-		r, err := ex.Exec(ctx, s.Exec.Command, s.Exec.Args...)
+		r, err := execLong(ctx, ex, s.Exec.Command, s.Exec.Args...)
 		if err != nil {
 			return err
 		}
@@ -333,7 +342,7 @@ func execOneStep(ctx context.Context, w io.Writer, ex executor.Executor, s recip
 			return fmt.Errorf("退出码 %d", r.ExitCode)
 		}
 	case s.Systemctl != nil:
-		r, err := ex.Exec(ctx, "systemctl", s.Systemctl.Action, s.Systemctl.Unit)
+		r, err := execLong(ctx, ex, "systemctl", s.Systemctl.Action, s.Systemctl.Unit)
 		if err != nil {
 			return err
 		}

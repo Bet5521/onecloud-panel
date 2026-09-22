@@ -151,7 +151,7 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { get, post, put } from '../api/http'
+import { get, post, put, showErr } from '../api/http'
 import { session } from '../session'
 const can = (p) => session.can(p)
 import { fmtAgo, fmtBytes } from '../utils'
@@ -189,6 +189,8 @@ async function loadAll() {
       get('/api/recipes/' + appId),
       get(`/api/nodes/${nodeId}/apps/${appId}/status`)
     ])
+  } catch (e) {
+    showErr(e, '加载失败')
   } finally {
     loading.value = false
   }
@@ -197,8 +199,12 @@ onMounted(loadAll)
 
 // ---- 服务动作 ----
 async function action(act) {
-  await post(`/api/nodes/${nodeId}/apps/${appId}/${act}`)
-  ElMessage.success(act === 'start' ? '已启动' : act === 'stop' ? '已停止' : '已重启')
+  try {
+    await post(`/api/nodes/${nodeId}/apps/${appId}/${act}`)
+    ElMessage.success(act === 'start' ? '已启动' : act === 'stop' ? '已停止' : '已重启')
+  } catch (e) {
+    showErr(e, '操作失败')
+  }
   refreshStatus()
 }
 async function refreshStatus() {
@@ -266,6 +272,8 @@ async function saveConfig() {
       path: configPath.value, content: configContent.value
     })
     ElMessage.success(d.hint || '配置已保存')
+  } catch (e) {
+    showErr(e, '配置保存失败')
   } finally {
     savingConfig.value = false
   }
@@ -277,11 +285,16 @@ const purgeData = ref(false)
 const taskId = ref(null)
 
 async function submitUninstall() {
-  uninstallVisible.value = false
-  const d = await post(`/api/nodes/${nodeId}/apps/${appId}/uninstall`, {
-    purge_data: purgeData.value
-  })
-  taskId.value = d.task_id
+  try {
+    const d = await post(`/api/nodes/${nodeId}/apps/${appId}/uninstall`, {
+      purge_data: purgeData.value
+    })
+    // 失败时保留对话框，便于直接重试
+    uninstallVisible.value = false
+    taskId.value = d.task_id
+  } catch (e) {
+    showErr(e, '卸载任务创建失败')
+  }
 }
 function onTaskFinished() {
   // 卸载完成后回到应用页

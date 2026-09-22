@@ -21,7 +21,7 @@
 <script setup>
 import { ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
-import { post } from '../api/http'
+import { post, showErr } from '../api/http'
 
 const props = defineProps({ modelValue: Boolean })
 const emit = defineEmits(['update:modelValue', 'success'])
@@ -65,6 +65,8 @@ async function submit() {
     ElMessage.success('密码修改成功')
     emit('success')
     close()
+  } catch (e) {
+    showErr(e, '密码修改失败')
   } finally {
     saving.value = false
   }

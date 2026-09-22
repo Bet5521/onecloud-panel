@@ -187,7 +187,7 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { get, put, post } from '../api/http'
+import { get, put, post, showErr } from '../api/http'
 import { session, setPanelName } from '../session'
 import { fmtTime, fmtDuration } from '../utils'
 
@@ -276,6 +276,8 @@ async function save() {
     })
     setPanelName(form.value.panel_name.trim())
     ElMessage.success('设置已保存')
+  } catch (e) {
+    showErr(e, '设置保存失败')
   } finally {
     saving.value = false
   }
@@ -312,7 +314,7 @@ async function saveTLS() {
       // 用户选择稍后重启，忽略
     }
   } catch (e) {
-    ElMessage.error(e.message || 'HTTPS 配置失败')
+    showErr(e, 'HTTPS 配置失败')
   } finally {
     tlsSaving.value = false
   }
@@ -331,6 +333,8 @@ async function saveSMTP() {
       smtp_test_recipient: smtp.value.test_recipient.trim()
     })
     ElMessage.success('SMTP 配置已保存')
+  } catch (e) {
+    showErr(e, 'SMTP 配置保存失败')
   } finally {
     smtpSaving.value = false
   }
@@ -344,7 +348,7 @@ async function testSMTP() {
     })
     ElMessage.success(r.hint || '测试邮件已发送')
   } catch (e) {
-    ElMessage.error(e.message || '发送失败')
+    showErr(e, '发送失败')
   } finally {
     smtpTesting.value = false
   }
@@ -359,6 +363,8 @@ async function saveDocker() {
       docker_insecure_registries: dockerCfg.value.insecure_registries.trim()
     })
     ElMessage.success('Docker 配置已保存')
+  } catch (e) {
+    showErr(e, 'Docker 配置保存失败')
   } finally {
     dockerSaving.value = false
   }

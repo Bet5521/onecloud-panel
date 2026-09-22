@@ -54,7 +54,7 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
-import { get, put } from '../api/http'
+import { get, put, showErr } from '../api/http'
 import { session } from '../session'
 
 const can = (p) => session.can(p)
@@ -97,6 +97,8 @@ async function load() {
       const found = roles.value.find((x) => x.id === current.value.id)
       if (found) selectRole(found)
     }
+  } catch (e) {
+    showErr(e, '角色加载失败')
   } finally {
     loading.value = false
   }
@@ -118,6 +120,8 @@ async function save() {
     const idx = roles.value.findIndex((x) => x.id === updated.id)
     if (idx >= 0) roles.value[idx] = updated
     selectRole(updated)
+  } catch (e) {
+    showErr(e, '权限保存失败')
   } finally {
     saving.value = false
   }

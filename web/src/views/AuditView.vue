@@ -80,7 +80,7 @@
 <script setup>
 import { ref, onMounted } from 'vue'
 import { Search, RefreshLeft } from '@element-plus/icons-vue'
-import { get } from '../api/http'
+import { get, showErr } from '../api/http'
 import { fmtTime } from '../utils'
 
 const moduleOptions = [
@@ -117,6 +117,8 @@ async function load() {
     const d = await get(`/api/audit-logs?${params.toString()}`)
     logs.value = Array.isArray(d.items) ? d.items : []
     total.value = d.total || 0
+  } catch (e) {
+    showErr(e, '审计日志加载失败')
   } finally {
     loading.value = false
   }

@@ -94,7 +94,7 @@
 <script setup>
 import { ref, reactive, computed, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { get, post, put, del } from '../api/http'
+import { get, post, put, del, showErr } from '../api/http'
 import { session } from '../session'
 import { fmtTime } from '../utils'
 
@@ -216,7 +216,7 @@ async function load() {
     const resp = await get('/api/notifications/channels')
     items.value = resp.items || []
   } catch (e) {
-    ElMessage.error(e.message || '加载失败')
+    showErr(e, '加载失败')
   } finally {
     loading.value = false
   }
@@ -271,7 +271,7 @@ async function save() {
     dlg.value = false
     load()
   } catch (e) {
-    ElMessage.error(e.message || '保存失败')
+    showErr(e, '保存失败')
   } finally {
     saving.value = false
   }
@@ -287,7 +287,7 @@ async function toggleEnabled(row, v) {
     row.enabled = !!v
     ElMessage.success(v ? '已启用' : '已停用')
   } catch (e) {
-    ElMessage.error(e.message || '操作失败')
+    showErr(e, '操作失败')
   }
 }
 
@@ -298,7 +298,7 @@ async function test(row) {
     row.tested_at = updated.tested_at
     ElMessage.success('测试消息已发送，请查收')
   } catch (e) {
-    ElMessage.error(e.message || '测试发送失败')
+    showErr(e, '测试发送失败')
   } finally {
     testingId.value = null
   }
@@ -315,7 +315,7 @@ async function remove(row) {
     ElMessage.success('已删除')
     load()
   } catch (e) {
-    ElMessage.error(e.message || '删除失败')
+    showErr(e, '删除失败')
   }
 }
 

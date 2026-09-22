@@ -331,7 +331,7 @@
 import { ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { get, post, put, del } from '../api/http'
+import { get, post, put, del, showErr } from '../api/http'
 import { session } from '../session'
 const can = (p) => session.can(p)
 import { fmtTime, fmtAgo, fmtBytes } from '../utils'
@@ -360,7 +360,7 @@ async function load() {
     const d = await get('/api/nodes' + (q.toString() ? '?' + q : ''))
     nodes.value = d.items
   } catch (e) {
-    ElMessage.error(e.message || '节点列表加载失败')
+    showErr(e, '节点列表加载失败')
   } finally {
     loading.value = false
   }
@@ -376,7 +376,12 @@ const liveLoading = ref(false)
 const installations = ref([])
 
 async function openDetail(row) {
-  cur.value = await get('/api/nodes/' + row.id)
+  try {
+    cur.value = await get('/api/nodes/' + row.id)
+  } catch (e) {
+    showErr(e, '节点详情加载失败')
+    return
+  }
   nodeDocker.value = {
     mirrors: cur.value.docker_mirrors || '',
     insecure_registries: cur.value.docker_insecure_registries || ''
@@ -428,28 +433,48 @@ function fmtUptime(s) {
 // ---- 节点操作 ----
 async function toggleStatus(row) {
   const next = row.status === 'disabled' ? 'active' : 'disabled'
-  await put('/api/nodes/' + row.id, { status: next })
-  ElMessage.success('已更新')
-  load()
+  try {
+    await put('/api/nodes/' + row.id, { status: next })
+    ElMessage.success('已更新')
+    load()
+  } catch (e) {
+    showErr(e, '状态更新失败')
+  }
 }
 
 async function remove(row) {
-  await ElMessageBox.confirm(`确认删除节点「${row.name}」？该操作不影响节点主机上的服务。`, '删除节点', {
-    type: 'warning'
-  })
-  await del('/api/nodes/' + row.id)
-  ElMessage.success('已删除')
-  load()
+  try {
+    await ElMessageBox.confirm(`确认删除节点「${row.name}」？该操作不影响节点主机上的服务。`, '删除节点', {
+      type: 'warning'
+    })
+  } catch {
+    return // 用户取消
+  }
+  try {
+    await del('/api/nodes/' + row.id)
+    ElMessage.success('已删除')
+    load()
+  } catch (e) {
+    showErr(e, '删除失败')
+  }
 }
 
 async function rotateToken(n) {
-  await ElMessageBox.confirm('轮换后旧 Token 立即失效，需同步更新 Agent 配置，确认继续？', '轮换 Token', {
-    type: 'warning'
-  })
-  const d = await post('/api/nodes/' + n.id + '/rotate-token', {})
-  ElMessage.success('Token 已轮换')
-  if (d.token) {
-    ElMessageBox.alert(d.token, '新 Agent Token（请妥善保管）')
+  try {
+    await ElMessageBox.confirm('轮换后旧 Token 立即失效，需同步更新 Agent 配置，确认继续？', '轮换 Token', {
+      type: 'warning'
+    })
+  } catch {
+    return // 用户取消
+  }
+  try {
+    const d = await post('/api/nodes/' + n.id + '/rotate-token', {})
+    ElMessage.success('Token 已轮换')
+    if (d.token) {
+      ElMessageBox.alert(d.token, '新 Agent Token（请妥善保管）')
+    }
+  } catch (e) {
+    showErr(e, 'Token 轮换失败')
   }
 }
 
@@ -467,18 +492,22 @@ async function installDocker(n) {
     taskTitle.value = '任务执行中'
     taskId.value = d.task_id
   } catch (e) {
-    ElMessage.error(e.message || 'Docker 安装任务创建失败')
+    showErr(e, 'Docker 安装任务创建失败')
   } finally {
     dockerInstalling.value = false
   }
 }
 async function saveNodeDocker() {
   if (!cur.value) return
-  await put('/api/nodes/' + cur.value.id + '/docker-config', {
-    mirrors: nodeDocker.value.mirrors,
-    insecure_registries: nodeDocker.value.insecure_registries
-  })
-  ElMessage.success('节点 Docker 配置已保存')
+  try {
+    await put('/api/nodes/' + cur.value.id + '/docker-config', {
+      mirrors: nodeDocker.value.mirrors,
+      insecure_registries: nodeDocker.value.insecure_registries
+    })
+    ElMessage.success('节点 Docker 配置已保存')
+  } catch (e) {
+    showErr(e, '节点 Docker 配置保存失败')
+  }
 }
 async function applyNodeDocker() {
   if (!cur.value) return
@@ -487,7 +516,7 @@ async function applyNodeDocker() {
     const d = await post('/api/nodes/' + cur.value.id + '/docker/apply-config', {})
     ElMessage.success('已入队应用配置，任务 ID: ' + d.task_id)
   } catch (e) {
-    ElMessage.error(e.message || '应用 Docker 配置失败')
+    showErr(e, '应用 Docker 配置失败')
   } finally {
     dockerApplying.value = false
   }
@@ -520,7 +549,7 @@ async function createToken() {
     })
     installCmd.value = d.install_command
   } catch (e) {
-    ElMessage.error(e.message || '注册令牌生成失败')
+    showErr(e, '注册令牌生成失败')
   } finally {
     tokCreating.value = false
   }
@@ -538,9 +567,13 @@ async function copyCmd() {
 const manual = ref({ name: '', address: '', token: '', network_type: 'lan' })
 async function suggest() {
   if (!manual.value.address) return
-  const d = await get('/api/network-suggest?address=' + encodeURIComponent(manual.value.address))
-  manual.value.network_type = d.network_type
-  ElMessage.success('建议接入类型：' + netMeta[d.network_type]?.label)
+  try {
+    const d = await get('/api/network-suggest?address=' + encodeURIComponent(manual.value.address))
+    manual.value.network_type = d.network_type
+    ElMessage.success('建议接入类型：' + netMeta[d.network_type]?.label)
+  } catch (e) {
+    showErr(e, '接入类型建议获取失败')
+  }
 }
 
 async function submitManual() {
@@ -548,11 +581,15 @@ async function submitManual() {
     ElMessage.warning('请填写完整信息')
     return
   }
-  await post('/api/nodes/manual', { ...manual.value })
-  ElMessage.success('节点已录入')
-  addVisible.value = false
-  manual.value = { name: '', address: '', token: '', network_type: '' }
-  load()
+  try {
+    await post('/api/nodes/manual', { ...manual.value })
+    ElMessage.success('节点已录入')
+    addVisible.value = false
+    manual.value = { name: '', address: '', token: '', network_type: '' }
+    load()
+  } catch (e) {
+    showErr(e, '节点录入失败')
+  }
 }
 
 // ---- SSH 添加 ----
@@ -601,7 +638,7 @@ async function saveNetworkType() {
     await put('/api/nodes/' + cur.value.id, { network_type: cur.value.network_type })
     ElMessage.success('接入类型已更新')
   } catch (e) {
-    ElMessage.error(e.message || '更新失败')
+    showErr(e, '更新失败')
     loadDetail(cur.value.id)
   }
 }

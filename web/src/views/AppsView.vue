@@ -270,7 +270,7 @@
 <script setup>
 import { ref, reactive, computed, onMounted, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { get, post, put, del } from '../api/http'
+import { get, post, put, del, showErr } from '../api/http'
 import { session } from '../session'
 const can = (p) => session.can(p)
 import { fmtTime } from '../utils'
@@ -299,6 +299,8 @@ async function load() {
     const [rs, ns] = [await get('/api/recipes'), await get('/api/nodes')]
     recipes.value = rs.items || rs
     nodes.value = ns.items
+  } catch (e) {
+    showErr(e, '加载失败')
   } finally {
     loading.value = false
   }
@@ -326,6 +328,8 @@ async function loadInstalled() {
       for (const it of d.items || []) rows.push(it)
     }
     installedRows.value = rows
+  } catch (e) {
+    showErr(e, '已安装应用加载失败')
   } finally {
     instLoading.value = false
   }
@@ -411,6 +415,8 @@ async function submit() {
     })
     installVisible.value = false
     taskId.value = d.task_id
+  } catch (e) {
+    showErr(e, '安装任务创建失败')
   } finally {
     submitting.value = false
   }
@@ -471,7 +477,7 @@ async function loadCustomApps() {
     const d = await get('/api/custom-apps')
     customApps.value = d.items || []
   } catch (e) {
-    ElMessage.error(e.message || '加载自定义应用失败')
+    showErr(e, '加载自定义应用失败')
   } finally {
     customLoading.value = false
   }
@@ -617,7 +623,7 @@ async function submitCustom() {
     customDlg.value = false
     loadCustomApps()
   } catch (e) {
-    ElMessage.error(e.message || '保存失败')
+    showErr(e, '保存失败')
   } finally {
     customSaving.value = false
   }
@@ -691,7 +697,7 @@ async function removeCustom(c) {
     ElMessage.success('已删除')
     loadCustomApps()
   } catch (e) {
-    ElMessage.error(e.message || '删除失败')
+    showErr(e, '删除失败')
   }
 }
 </script>

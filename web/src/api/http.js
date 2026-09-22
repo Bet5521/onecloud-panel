@@ -1,4 +1,5 @@
 // 统一 fetch 封装：JSON 编解码、错误提取、401 全局会话失效。
+import { ElMessage } from 'element-plus'
 import { session } from '../session'
 
 export class ApiError extends Error {
@@ -24,7 +25,12 @@ export async function request(method, url, body) {
   if (resp.status === 401 && !url.endsWith('/auth/login')) {
     session.clear()
     session.expired = true
-    return null
+    // 会话失效必须抛错。早先这里 return null，调用方随后在 d.items 上抛
+    // 语义不明的 TypeError，把「登录过期」掩盖成「前端 bug」。
+    // 跳转由 App.vue 监听 session.user 变为 null 完成，不依赖返回值。
+    const err = new ApiError('登录状态已过期，请重新登录', 401)
+    err.sessionExpired = true
+    throw err
   }
 
   let data = null
@@ -41,6 +47,15 @@ export async function request(method, url, body) {
     throw new ApiError(msg, resp.status)
   }
   return data
+}
+
+// 统一的请求错误提示。
+// 会话失效（sessionExpired）不弹窗：全局已跳转登录页并在页头给出说明，
+// 再弹一次属于重复打扰。注意登录接口密码错误同样是 401，但不带该标记，
+// 因此仍会正常提示。
+export function showErr(e, fallback) {
+  if (e && e.sessionExpired) return
+  ElMessage.error((e && e.message) || fallback || '操作失败')
 }
 
 export const get = (url) => request('GET', url)

@@ -161,7 +161,7 @@
 import { ref, computed, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus } from '@element-plus/icons-vue'
-import { get, post, put, del } from '../api/http'
+import { get, post, put, del, showErr } from '../api/http'
 import { session } from '../session'
 import { fmtTime } from '../utils'
 import SuperCodeDialog from '../components/SuperCodeDialog.vue'
@@ -187,6 +187,8 @@ async function load() {
     const [u, r] = await Promise.all([get('/api/users'), get('/api/roles')])
     users.value = Array.isArray(u.items) ? u.items : []
     roles.value = Array.isArray(r.items) ? r.items : []
+  } catch (e) {
+    showErr(e, '用户列表加载失败')
   } finally {
     loading.value = false
   }
@@ -218,6 +220,8 @@ async function submitCreate() {
       showSuperCode(created.super_code)
     }
     load()
+  } catch (e) {
+    showErr(e, '创建失败')
   } finally {
     saving.value = false
   }
@@ -290,6 +294,8 @@ async function submitEdit() {
     ElMessage.success('已保存')
     editDlg.value = false
     load()
+  } catch (e) {
+    showErr(e, '保存失败')
   } finally {
     saving.value = false
   }
@@ -318,6 +324,8 @@ async function submitReset() {
     if (resp?.super_code) {
       showSuperCode(resp.super_code)
     }
+  } catch (e) {
+    showErr(e, '密码重置失败')
   } finally {
     saving.value = false
   }
@@ -331,11 +339,15 @@ async function onRotateCode(row) {
       '重置验证码', { type: 'warning', confirmButtonText: '生成' }
     )
   } catch {
-    return
+    return // 用户取消
   }
-  const resp = await post(`/api/users/${row.id}/super-code`, {})
-  if (resp?.super_code) {
-    showSuperCode(resp.super_code)
+  try {
+    const resp = await post(`/api/users/${row.id}/super-code`, {})
+    if (resp?.super_code) {
+      showSuperCode(resp.super_code)
+    }
+  } catch (e) {
+    showErr(e, '验证码重置失败')
   }
 }
 
@@ -346,11 +358,15 @@ async function onDelete(row) {
       type: 'warning', confirmButtonText: '删除'
     })
   } catch {
-    return
+    return // 用户取消
   }
-  await del(`/api/users/${row.id}`)
-  ElMessage.success('已删除')
-  load()
+  try {
+    await del(`/api/users/${row.id}`)
+    ElMessage.success('已删除')
+    load()
+  } catch (e) {
+    showErr(e, '删除失败')
+  }
 }
 
 onMounted(load)

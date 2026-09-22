@@ -105,7 +105,7 @@
 import { ref, reactive, computed, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { get, post, put } from '../api/http'
+import { get, post, put, showErr } from '../api/http'
 import { session } from '../session'
 import ChangePasswordDialog from '../components/ChangePasswordDialog.vue'
 
@@ -160,6 +160,8 @@ async function saveProfile() {
     }
     ElMessage.success('已保存')
     profileDlg.value = false
+  } catch (e) {
+    showErr(e, '保存失败')
   } finally {
     savingProfile.value = false
   }

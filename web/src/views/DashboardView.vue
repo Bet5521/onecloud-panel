@@ -117,7 +117,7 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue'
 import { Refresh } from '@element-plus/icons-vue'
-import { get } from '../api/http'
+import { get, showErr } from '../api/http'
 import { fmtTime, fmtBytes } from '../utils'
 
 const loading = ref(true)
@@ -175,6 +175,8 @@ async function load() {
     recentAudits.value = d.recent_audits ?? []
     recentTasks.value = d.recent_tasks ?? []
     nodes.value = d.nodes ?? []
+  } catch (e) {
+    showErr(e, '仪表盘加载失败')
   } finally {
     loading.value = false
   }

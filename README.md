@@ -11,8 +11,11 @@
 - **应用商店**：**26 个内置配方**，支持原生 `systemd` 直装与 Docker 容器两种方式。
 - **集群管理**：注册令牌接入节点，Agent 心跳上报，在线状态、资源指标一目了然。
 - **权限体系**：13 个权限点，预置管理员 / 操作员 / 只读用户三种角色，可自定义。
-- **安全基线**：argon2id 密码哈希、登录与重置限流、会话管理、全量审计日志。
+- **安全基线**：argon2id 密码哈希、登录与重置限流、会话管理、全量审计日志；
+  全站安全响应头（CSP / HSTS / nosniff 等）、CSRF 同站校验、请求体限额、
+  登录设备管理（查看/注销其他设备）、改密后自动注销其他会话。
 - **密码自助重置**：登录页凭重置码（15 分钟有效）自助重置，SMTP 邮件与服务日志双通道。
+- **运维配套**：审计日志 CSV 导出（按用户/模块/动作/结果/时间筛选），面板数据一键备份（`panel.db` 一致快照，默认不含 `secret.key`）。
 
 ---
 
@@ -34,11 +37,11 @@
 ```bash
 # x86_64
 curl -fsSL -o /usr/local/bin/onecloud-panel \
-  https://github.com/Bet5521/onecloud-panel/releases/download/v1.99.9/onecloud-panel-linux-amd64
+  https://github.com/Bet5521/onecloud-panel/releases/download/v2.0.0/onecloud-panel-linux-amd64
 
 # 玩客云 / armv7l
 # curl -fsSL -o /usr/local/bin/onecloud-panel \
-#   https://github.com/Bet5521/onecloud-panel/releases/download/v1.99.9/onecloud-panel-linux-armv7
+#   https://github.com/Bet5521/onecloud-panel/releases/download/v2.0.0/onecloud-panel-linux-armv7
 
 chmod +x /usr/local/bin/onecloud-panel
 ```
@@ -48,7 +51,7 @@ chmod +x /usr/local/bin/onecloud-panel
 
 ```bash
 GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -trimpath \
-  -ldflags "-s -w -X onecloud-panel/internal/version.Version=1.99.9" \
+  -ldflags "-s -w -X onecloud-panel/internal/version.Version=2.0.0" \
   -o dist/onecloud-panel-linux-amd64 ./cmd/onecloud-panel
 ```
 
@@ -104,6 +107,8 @@ curl -fsSL http://192.168.1.10:8080/install.sh | sudo bash -s -- agent \
 
 Agent 每 30 秒心跳上报，注册成功后即可在面板看到节点在线状态与资源指标。
 
+> **安全提示**：面板调用节点 Agent 时 Token 走 Bearer 头传输。未显式写明协议的**公网**地址一律按 `https://` 连接（拒绝明文回退）；局域网/私网/组网地址（含 100.64.0.0/10，如 Tailscale）保持 `http://`。公网节点请为 Agent 配置 TLS 反向代理，或显式填写 `http://`（明文自担风险）。
+
 ### 第 5 步：部署第一个应用
 
 面板 Web UI → **应用商店** → 选择应用（如 `Vaultwarden` / `qBittorrent` / `Alist`）→ 按向导填写端口 / 数据目录 → 安装。安装进度与日志实时可见，完成后给出访问地址。
@@ -112,13 +117,13 @@ Agent 每 30 秒心跳上报，注册成功后即可在面板看到节点在线�
 
 纯 HTTP 已可直接使用。需要加密时：**设置 → 传输安全 → 启用 HTTPS → 应用并重启**。默认生成自签证书（SAN 自动包含本机所有 IP / 主机名），也可粘贴自有证书（如 Let's Encrypt）。开启后 HTTP 与 HTTPS 共用 `:8080`，不影响节点接入。
 
-> 忘记管理员密码？登录页「忘记密码？」凭重置码自助重置；重置码始终同时输出到面板日志（`journalctl -u onecloud-panel -n 50`）。
+> 忘记管理员密码？登录页「忘记密码？」凭重置码自助重置；重置码通过用户绑定的邮箱/通知方式下发，仅当无可用渠道时才输出到面板日志（`journalctl -u onecloud-panel -n 50`）。
 
 ---
 
 ## 下载
 
-GitHub Releases（`v1.99.9`）提供以下二进制：
+GitHub Releases（`v2.0.0`）提供以下二进制：
 
 | 文件 | 适用架构 / 系统 |
 |---|---|

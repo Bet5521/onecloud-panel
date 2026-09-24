@@ -113,6 +113,42 @@
             <el-descriptions-item label="二进制路径"><span class="path">{{ status.binary || '-' }}</span></el-descriptions-item>
             <el-descriptions-item label="数据目录"><span class="path">{{ status.data_dir || '-' }}</span></el-descriptions-item>
           </el-descriptions>
+
+          <!-- 在线更新 -->
+          <div class="update-bar">
+            <el-button v-if="can('settings:write')" size="small" :loading="updateChecking" @click="checkUpdate">
+              检查更新
+            </el-button>
+            <el-button v-if="canUpdate" size="small" type="primary" :loading="updating" @click="applyUpdate">
+              立即更新
+            </el-button>
+            <el-tag v-if="updateInfo && !updateInfo.unsupported" size="small"
+              :type="updateInfo.has_update ? 'warning' : 'success'">
+              {{ updateInfo.has_update ? '可更新至 ' + updateInfo.latest : '已是最新版本 ' + updateInfo.latest }}
+            </el-tag>
+            <el-tag v-if="updateInfo && updateInfo.unsupported" size="small" type="info">
+              {{ updateInfo.unsupported }}
+            </el-tag>
+          </div>
+          <div v-if="updateInfo && updateInfo.notes" class="update-notes">
+            <div class="update-notes-title">{{ updateInfo.latest }} 更新说明</div>
+            <pre class="update-notes-body">{{ updateInfo.notes }}</pre>
+          </div>
+        </el-card>
+
+        <!-- ============ 数据备份 ============ -->
+        <el-card shadow="never" class="section-gap">
+          <template #header><span>数据备份</span></template>
+          <div class="backup-desc">
+            导出面板数据（SQLite 一致快照 + 恢复说明）。恢复：停止面板 → 解包覆盖数据目录中的
+            <span class="path">panel.db</span>（含 secret.key 时一并覆盖）→ 启动面板。
+          </div>
+          <el-checkbox v-model="backupWithSecret">
+            一并打包 secret.key（完整可恢复备份必需；泄露后持有者可解密节点 Token 与 SSH 凭据）
+          </el-checkbox>
+          <div class="backup-actions">
+            <el-button type="primary" :icon="Download" @click="downloadBackup">下载备份</el-button>
+          </div>
         </el-card>
 
         <!-- ============ 邮件服务 SMTP ============ -->
@@ -140,7 +176,7 @@
             </el-form-item>
             <el-form-item label="密码/授权码">
               <el-input v-model="smtp.password" type="password" show-password
-                :disabled="!can('settings:write')" placeholder="SMTP 密码或邮箱授权码" />
+                :disabled="!can('settings:write')" placeholder="输入新密码以修改；留空或保持掩码不变" />
             </el-form-item>
             <el-form-item label="发件地址">
               <el-input v-model="smtp.from" :disabled="!can('settings:write')"
@@ -187,6 +223,7 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { Download } from '@element-plus/icons-vue'
 import { get, put, post, showErr } from '../api/http'
 import { session, setPanelName } from '../session'
 import { fmtTime, fmtDuration } from '../utils'
@@ -216,6 +253,72 @@ const smtpReady = computed(() => smtp.value.host && smtp.value.port && smtp.valu
 const dockerSaving = ref(false)
 const dockerCfg = ref({ mirrors: '', insecure_registries: '' })
 
+// ---- 数据备份 ----
+const backupWithSecret = ref(false)
+
+// ---- 在线更新 ----
+const updateChecking = ref(false)
+const updating = ref(false)
+const updateInfo = ref(null)
+const canUpdate = computed(() =>
+  updateInfo.value && updateInfo.value.has_update && updateInfo.value.asset_name
+  && !updateInfo.value.unsupported && can('settings:write'))
+
+// checkUpdate 查询 GitHub 最新 Release 并与当前版本对比。
+async function checkUpdate() {
+  updateChecking.value = true
+  try {
+    updateInfo.value = await get('/api/update/check')
+    if (updateInfo.value.unsupported) {
+      ElMessage.warning(updateInfo.value.unsupported)
+    } else if (updateInfo.value.has_update) {
+      ElMessage.success(`发现新版本 ${updateInfo.value.latest}`)
+    } else {
+      ElMessage.info(`已是最新版本（${updateInfo.value.latest}）`)
+    }
+  } catch (e) {
+    showErr(e, '检查更新失败')
+  } finally {
+    updateChecking.value = false
+  }
+}
+
+// applyUpdate 下载最新版本、校验替换后经 systemd 自动重启。
+async function applyUpdate() {
+  try {
+    await ElMessageBox.confirm(
+      `将下载并替换面板程序至 ${updateInfo.value.latest}，完成后自动重启面板（约 2 秒）。`
+      + '更新期间请勿关闭设备电源，是否继续？',
+      '在线更新确认',
+      { confirmButtonText: '立即更新', cancelButtonText: '取消', type: 'warning' }
+    )
+  } catch {
+    return
+  }
+  updating.value = true
+  try {
+    const res = await post('/api/update/apply')
+    ElMessage.success(`已更新至 ${res.version || updateInfo.value.latest}，面板正在重启…`)
+  } catch (e) {
+    showErr(e, '在线更新失败')
+  } finally {
+    updating.value = false
+  }
+}
+
+// downloadBackup 导出面板数据备份（鉴权走会话 Cookie，直接触发浏览器下载）。
+function downloadBackup() {
+  const a = document.createElement('a')
+  a.href = backupWithSecret.value ? '/api/panel/backup?include_secrets=1' : '/api/panel/backup'
+  a.rel = 'noopener'
+  document.body.appendChild(a)
+  a.click()
+  document.body.removeChild(a)
+  if (backupWithSecret.value) {
+    ElMessage.warning('备份中包含 secret.key，请妥善保管，勿分享给他人')
+  }
+}
+
 async function load() {
   loading.value = true
   try {
@@ -237,7 +340,7 @@ async function load() {
     tls.value.cert_pem = ''
     tls.value.key_pem = ''
 
-    // SMTP 回填（密码仍回显，属于本地管理界面）
+    // SMTP 回填（密码以掩码回显，原值保留在服务端，保存时未修改则不覆盖）
     smtp.value = {
       host: s.smtp_host || '',
       port: s.smtp_port || '',
@@ -404,6 +507,45 @@ onMounted(load)
 }
 .w160 {
   width: 160px;
+}
+.backup-desc {
+  font-size: 13px;
+  color: #606266;
+  line-height: 1.6;
+  margin-bottom: 10px;
+}
+.backup-actions {
+  margin-top: 12px;
+}
+.update-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 12px;
+}
+.update-notes {
+  margin-top: 10px;
+  padding: 8px 10px;
+  background: #f5f7fa;
+  border-radius: 4px;
+}
+.update-notes-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: #606266;
+  margin-bottom: 4px;
+}
+.update-notes-body {
+  margin: 0;
+  font-size: 12px;
+  color: #909399;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 180px;
+  overflow-y: auto;
+  font-family: inherit;
 }
 @media (max-width: 1199px) {
   .mobile-gap {

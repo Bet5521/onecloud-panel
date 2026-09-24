@@ -69,7 +69,24 @@ journalctl -u onecloud-panel --since "2026-09-19 00:00" --until "2026-09-19 12:0
 
 ## 三、备份与恢复
 
-### 3.1 需要备份的文件
+### 3.1 一键备份（面板内置，推荐）
+
+「设置 → 数据备份 → 下载备份」即可导出 `onecloud-panel-backup-<时间戳>.tar.gz`，
+内含 `panel.db` 一致快照（`VACUUM INTO`，热备安全）与 `manifest.json`（版本与恢复说明）。
+
+```bash
+# 等价 API（需 settings:write 权限）
+curl -b cookies.txt -o backup.tar.gz http://127.0.0.1:8080/api/panel/backup
+# 需要完整可恢复备份时加 include_secrets=1 一并打包 secret.key
+curl -b cookies.txt -o backup-full.tar.gz \
+  'http://127.0.0.1:8080/api/panel/backup?include_secrets=1'
+```
+
+> **安全提示**：`secret.key` 是节点令牌与 SSH 凭据的解密密钥，**默认不打包**。
+> 含 `secret.key` 的备份等价于凭据库，请按机密文件保管（加密存储、限制访问、异地存放）。
+> 导出行为会记入审计日志（`module=settings, action=backup_export`）。
+
+### 3.2 需要备份的文件
 
 | 文件 | 说明 |
 |---|---|
@@ -78,7 +95,7 @@ journalctl -u onecloud-panel --since "2026-09-19 00:00" --until "2026-09-19 12:0
 | `/var/lib/onecloud-panel/tls/` | TLS 证书与私钥 |
 | `/etc/default/onecloud-panel` | 环境变量配置 |
 
-### 3.2 备份脚本
+### 3.3 备份脚本
 
 ```bash
 #!/bin/bash
@@ -97,7 +114,7 @@ cp /etc/default/onecloud-panel "$BACKUP_DIR/env-$TS"
 echo "备份完成: $BACKUP_DIR (panel-$TS.db)"
 ```
 
-### 3.3 恢复
+### 3.4 恢复
 
 ```bash
 systemctl stop onecloud-panel

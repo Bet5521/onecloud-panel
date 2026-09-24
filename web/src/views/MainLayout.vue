@@ -32,6 +32,7 @@
               <el-dropdown-menu>
                 <el-dropdown-item command="profile">个人资料</el-dropdown-item>
                 <el-dropdown-item command="changePassword">修改密码</el-dropdown-item>
+                <el-dropdown-item command="sessions">登录设备</el-dropdown-item>
                 <el-dropdown-item command="logout" divided>退出登录</el-dropdown-item>
               </el-dropdown-menu>
             </template>
@@ -45,6 +46,7 @@
     </el-container>
 
     <ChangePasswordDialog v-model="pwdDlg" />
+    <SessionsDialog v-model="sessionsDlg" />
 
     <!-- 个人资料 -->
     <el-dialog v-model="profileDlg" title="个人资料" width="460px">
@@ -92,6 +94,15 @@
           />
           <div class="tip">{{ targetHint }}</div>
         </el-form-item>
+        <template v-if="profileForm.notify_method !== 'log'">
+          <el-divider content-position="left">订阅事件</el-divider>
+          <el-form-item label="订阅事件">
+            <el-checkbox-group v-model="profileForm.notify_events" class="events-group">
+              <el-checkbox v-for="ev in eventOptions" :key="ev.code" :value="ev.code">{{ ev.name }}</el-checkbox>
+            </el-checkbox-group>
+            <div class="tip">勾选后，按上方所选通知方式接收对应事件的推送；仅启用中且同样订阅了该事件的通道会被使用。</div>
+          </el-form-item>
+        </template>
       </el-form>
       <template #footer>
         <el-button @click="profileDlg = false">取消</el-button>
@@ -108,11 +119,13 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { get, post, put, showErr } from '../api/http'
 import { session } from '../session'
 import ChangePasswordDialog from '../components/ChangePasswordDialog.vue'
+import SessionsDialog from '../components/SessionsDialog.vue'
 
 const route = useRoute()
 const router = useRouter()
 const collapsed = ref(false)
 const pwdDlg = ref(false)
+const sessionsDlg = ref(false)
 
 // 个人资料
 const profileDlg = ref(false)
@@ -121,8 +134,19 @@ const notifyChannels = ref([])
 const profileForm = reactive({
   real_name: '', phone: '',
   notify_method: 'log', notify_email: '', notify_sms_phone: '', notify_channel_id: null,
-  notify_target: ''
+  notify_target: '',
+  notify_events: []
 })
+
+// 可订阅的通知事件（与后端 notify.AllEvents 保持一致）
+const eventOptions = [
+  { code: 'node_online', name: '节点上线' },
+  { code: 'node_offline', name: '节点下线' },
+  { code: 'node_change', name: '节点变动' },
+  { code: 'app_online', name: '应用上线' },
+  { code: 'app_offline', name: '应用下线' },
+  { code: 'app_change', name: '应用变动' }
+]
 
 // 当前所选通道的「每用户接收标识」需求描述：决定是否显示 / 是否必填。
 const selectedChannel = computed(
@@ -151,7 +175,8 @@ async function saveProfile() {
       notify_email: profileForm.notify_email,
       notify_sms_phone: profileForm.notify_sms_phone,
       notify_channel_id: profileForm.notify_channel_id || 0,
-      notify_target: profileForm.notify_target || ''
+      notify_target: profileForm.notify_target || '',
+      notify_events: [...profileForm.notify_events]
     })
     // 同步本地会话展示
     if (session.user) {
@@ -191,6 +216,7 @@ async function openProfile() {
   profileForm.notify_sms_phone = me.notify_sms_phone || ''
   profileForm.notify_channel_id = me.notify_channel_id || null
   profileForm.notify_target = me.notify_target || ''
+  profileForm.notify_events = Array.isArray(me.notify_events) ? [...me.notify_events] : []
   profileDlg.value = true
   await loadNotifyChannels()
 }
@@ -220,6 +246,10 @@ async function onCommand(command) {
   }
   if (command === 'changePassword') {
     pwdDlg.value = true
+    return
+  }
+  if (command === 'sessions') {
+    sessionsDlg.value = true
     return
   }
   if (command === 'logout') {
@@ -301,5 +331,10 @@ async function onCommand(command) {
   font-size: 12px;
   color: #909399;
   line-height: 1.5;
+}
+.events-group {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  width: 100%;
 }
 </style>

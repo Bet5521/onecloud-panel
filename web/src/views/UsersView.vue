@@ -126,6 +126,15 @@
           />
           <div class="tip">{{ targetHint }}</div>
         </el-form-item>
+        <template v-if="editForm.notify_method !== 'log'">
+          <el-divider content-position="left">订阅事件</el-divider>
+          <el-form-item label="订阅事件">
+            <el-checkbox-group v-model="editForm.notify_events" class="events-group">
+              <el-checkbox v-for="ev in eventOptions" :key="ev.code" :value="ev.code">{{ ev.name }}</el-checkbox>
+            </el-checkbox-group>
+            <div class="tip">勾选后，该用户按所选通知方式接收对应事件的推送；仅启用中且同样订阅了该事件的通道会被使用。</div>
+          </el-form-item>
+        </template>
       </el-form>
       <template #footer>
         <el-button @click="editDlg = false">取消</el-button>
@@ -234,8 +243,19 @@ const notifyChannels = ref([])
 const editForm = ref({
   role_id: null, status: 'active', real_name: '', phone: '',
   notify_method: 'log', notify_email: '', notify_sms_phone: '', notify_channel_id: null,
-  notify_target: ''
+  notify_target: '',
+  notify_events: []
 })
+
+// 可订阅的通知事件（与后端 notify.AllEvents 保持一致）
+const eventOptions = [
+  { code: 'node_online', name: '节点上线' },
+  { code: 'node_offline', name: '节点下线' },
+  { code: 'node_change', name: '节点变动' },
+  { code: 'app_online', name: '应用上线' },
+  { code: 'app_offline', name: '应用下线' },
+  { code: 'app_change', name: '应用变动' }
+]
 
 // 当前所选通道的「每用户接收标识」需求描述：决定是否显示 / 是否必填。
 const selectedChannel = computed(
@@ -262,7 +282,8 @@ function openEdit(row) {
     notify_email: row.notify_email || '',
     notify_sms_phone: row.notify_sms_phone || '',
     notify_channel_id: row.notify_channel_id || null,
-    notify_target: row.notify_target || ''
+    notify_target: row.notify_target || '',
+    notify_events: Array.isArray(row.notify_events) ? [...row.notify_events] : []
   }
   editDlg.value = true
   loadNotifyChannels()
@@ -289,7 +310,8 @@ async function submitEdit() {
       notify_email: editForm.value.notify_email,
       notify_sms_phone: editForm.value.notify_sms_phone,
       notify_channel_id: editForm.value.notify_channel_id || 0,
-      notify_target: editForm.value.notify_target || ''
+      notify_target: editForm.value.notify_target || '',
+      notify_events: [...editForm.value.notify_events]
     })
     ElMessage.success('已保存')
     editDlg.value = false
@@ -386,5 +408,10 @@ onMounted(load)
 .tip {
   font-size: 12px;
   color: #909399;
+}
+.events-group {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  width: 100%;
 }
 </style>

@@ -3,6 +3,7 @@ package api
 import (
 	"net/http"
 	"strings"
+	"sync"
 
 	"onecloud-panel/internal/auth"
 )
@@ -22,8 +23,14 @@ type setupReq struct {
 	Password string `json:"password"`
 }
 
+// setupMu 串行化首次初始化：未加锁时两个并发请求都能通过「尚无用户」检查，
+// 同时创建两个管理员账号（面板为单进程，进程内互斥即足够）。
+var setupMu sync.Mutex
+
 // POST /api/setup — 首次初始化，创建管理员（公开，仅一次）
 func (a *API) setup(w http.ResponseWriter, r *http.Request) {
+	setupMu.Lock()
+	defer setupMu.Unlock()
 	n, err := a.store.CountUsers()
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "状态查询失败")
@@ -41,6 +48,10 @@ func (a *API) setup(w http.ResponseWriter, r *http.Request) {
 	req.Username = strings.TrimSpace(req.Username)
 	if len(req.Username) < 3 || len(req.Username) > 32 {
 		writeError(w, http.StatusBadRequest, "用户名长度需为 3-32")
+		return
+	}
+	if err := auth.ValidateUsername(req.Username); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	if len(req.Password) < 8 || len(req.Password) > 128 {

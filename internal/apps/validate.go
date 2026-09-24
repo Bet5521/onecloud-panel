@@ -3,6 +3,7 @@ package apps
 import (
 	"fmt"
 	"strconv"
+	"strings"
 	"unicode"
 	"unicode/utf8"
 
@@ -44,8 +45,17 @@ func validateVariables(recipe *recipes.Recipe, vars map[string]string) error {
 		}
 		switch d.Type {
 		case "int":
-			if _, err := strconv.Atoi(val); err != nil {
+			n, err := strconv.Atoi(val)
+			if err != nil {
 				return fmt.Errorf("参数「%s」必须为整数", name)
+			}
+			// 端口类参数收紧到合法端口区间：否则 0 / 70000 这类值能通过前置校验，
+			// 直到安装阶段才报出难以定位的底层错误。
+			if isPortVar(d.Key, name) && (n < 1 || n > 65535) {
+				return fmt.Errorf("参数「%s」必须为 1-65535 的端口号", name)
+			}
+			if n < -2147483648 || n > 2147483647 {
+				return fmt.Errorf("参数「%s」数值超出范围", name)
 			}
 		case "bool":
 			if _, err := strconv.ParseBool(val); err != nil {
@@ -69,6 +79,12 @@ func validateVariables(recipe *recipes.Recipe, vars map[string]string) error {
 		}
 	}
 	return nil
+}
+
+// isPortVar 判断变量是否为端口类参数（按变量键/名称启发式识别）。
+func isPortVar(key, name string) bool {
+	s := strings.ToLower(key + " " + name)
+	return strings.Contains(s, "port") || strings.Contains(s, "端口")
 }
 
 // checkSafeString 字符串变量安全字符集：

@@ -25,6 +25,16 @@
             </el-tooltip>
           </template>
         </el-table-column>
+        <el-table-column label="订阅事件" min-width="200">
+          <template #default="{ row }">
+            <template v-if="row.events && row.events.length">
+              <el-tag v-for="ev in row.events" :key="ev" size="small" type="info" class="event-tag">
+                {{ eventNameMap[ev] || ev }}
+              </el-tag>
+            </template>
+            <span v-else class="muted">未订阅任何事件</span>
+          </template>
+        </el-table-column>
         <el-table-column label="最近测试" width="160">
           <template #default="{ row }">
             <span v-if="row.tested_at">{{ fmtTime(Number(row.tested_at)) }}</span>
@@ -41,9 +51,43 @@
         </el-table-column>
       </el-table>
       <p class="hint" style="margin-top: 12px">
-        已启用的通道用于：用户按个人资料中绑定的通知方式接收密码重置码等重要通知。密钥字段回显为
+        已启用的通道用于：用户按个人资料中绑定的通知方式接收密码重置码等重要通知。事件通知采用两级订阅：通道勾选订阅事件，用户在个人资料中勾选个人订阅，二者匹配才会推送。密钥字段回显为
         <code>******</code>，保存时保持不变即可。短信通道需选择云短信平台并完成配置后，才可用于下发验证码。
       </p>
+    </el-card>
+
+    <!-- 定时状态摘要 -->
+    <el-card shadow="never" class="sched-card">
+      <template #header>
+        <div class="card-head">
+          <span>定时状态摘要</span>
+          <el-switch v-model="sched.enabled" :disabled="!can('settings:write')" />
+        </div>
+      </template>
+      <el-form label-width="110px" v-loading="schedLoading">
+        <el-form-item label="发送间隔">
+          <el-select v-model="sched.interval_hours" :disabled="!can('settings:write') || !sched.enabled"
+            style="width: 220px">
+            <el-option v-for="h in [1, 6, 12, 24]" :key="h" :value="h" :label="`每 ${h} 小时`" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="摘要内容">
+          <el-checkbox v-model="sched.include_nodes" :disabled="!can('settings:write')">节点状态</el-checkbox>
+          <el-checkbox v-model="sched.include_apps" :disabled="!can('settings:write')">应用在线状态</el-checkbox>
+        </el-form-item>
+        <el-form-item label="接收通道">
+          <el-select v-model="sched.channel_ids" multiple collapse-tags collapse-tags-tooltip
+            :disabled="!can('settings:write')" placeholder="选择接收摘要的通道" style="width: 100%">
+            <el-option v-for="c in items" :key="c.id" :value="c.id"
+              :label="c.name + (c.enabled ? '' : '（未启用）')" />
+          </el-select>
+          <span class="hint">发送时仅使用启用中的通道，停用的通道会被自动跳过。</span>
+        </el-form-item>
+        <el-form-item>
+          <el-button type="primary" :loading="schedSaving" :disabled="!can('settings:write')"
+            @click="saveSchedule">保存设置</el-button>
+        </el-form-item>
+      </el-form>
     </el-card>
 
     <!-- 新建/编辑对话框 -->
@@ -75,6 +119,17 @@
             <span v-if="f.hint" class="hint">{{ f.hint }}</span>
           </el-form-item>
         </template>
+
+        <el-form-item label="订阅事件">
+          <el-select v-model="form.events" multiple collapse-tags collapse-tags-tooltip
+            placeholder="选择该通道接收的事件；不选则不推送任何事件" style="width: 100%">
+            <el-option v-for="ev in eventOptions" :key="ev.code" :value="ev.code" :label="ev.name" />
+          </el-select>
+          <span class="hint">
+            仅订阅了对应事件的启用通道才会收到推送：群发型通道（企业微信/钉钉/Server酱/Webhook）直接推送，
+            个人型通道（WxPusher/短信）按绑定用户定向下发。
+          </span>
+        </el-form-item>
 
         <el-form-item label="启用">
           <el-switch v-model="form.enabled" :disabled="!formConfigured" />
@@ -112,7 +167,30 @@ const form = reactive({
   type: 'wxpusher',
   name: '',
   enabled: true,
-  config: {}
+  config: {},
+  events: []
+})
+
+// 可订阅的通知事件（与后端 notify.AllEvents 保持一致）
+const eventOptions = [
+  { code: 'node_online', name: '节点上线' },
+  { code: 'node_offline', name: '节点下线' },
+  { code: 'node_change', name: '节点变动' },
+  { code: 'app_online', name: '应用上线' },
+  { code: 'app_offline', name: '应用下线' },
+  { code: 'app_change', name: '应用变动' }
+]
+const eventNameMap = Object.fromEntries(eventOptions.map((e) => [e.code, e.name]))
+
+// 定时状态摘要设置
+const schedLoading = ref(false)
+const schedSaving = ref(false)
+const sched = reactive({
+  enabled: false,
+  interval_hours: 24,
+  include_nodes: true,
+  include_apps: true,
+  channel_ids: []
 })
 
 // 各类型配置字段定义（secret 字段回显 ******，提交保持原值）
@@ -228,6 +306,7 @@ function resetForm() {
   form.name = ''
   form.enabled = true
   form.config = {}
+  form.events = []
 }
 
 function openCreate() {
@@ -241,6 +320,7 @@ function openEdit(row) {
   form.name = row.name
   form.enabled = row.enabled
   form.config = { ...(row.config || {}) }
+  form.events = Array.isArray(row.events) ? [...row.events] : []
   dlg.value = true
 }
 
@@ -259,7 +339,8 @@ async function save() {
       type: form.type,
       name: form.name.trim(),
       enabled: form.enabled,
-      config: { ...form.config }
+      config: { ...form.config },
+      events: [...form.events]
     }
     if (editingId.value) {
       await put(`/api/notifications/channels/${editingId.value}`, payload)
@@ -304,6 +385,44 @@ async function test(row) {
   }
 }
 
+async function loadSchedule() {
+  schedLoading.value = true
+  try {
+    const s = await get('/api/settings/notifications/schedule')
+    sched.enabled = !!s.enabled
+    sched.interval_hours = s.interval_hours || 24
+    sched.include_nodes = !!s.include_nodes
+    sched.include_apps = !!s.include_apps
+    sched.channel_ids = Array.isArray(s.channel_ids) ? [...s.channel_ids] : []
+  } catch (e) {
+    showErr(e, '定时摘要设置加载失败')
+  } finally {
+    schedLoading.value = false
+  }
+}
+
+async function saveSchedule() {
+  if (!sched.include_nodes && !sched.include_apps) {
+    ElMessage.warning('请至少选择一项摘要内容（节点状态/应用在线状态）')
+    return
+  }
+  schedSaving.value = true
+  try {
+    await put('/api/settings/notifications/schedule', {
+      enabled: sched.enabled,
+      interval_hours: sched.interval_hours,
+      include_nodes: sched.include_nodes,
+      include_apps: sched.include_apps,
+      channel_ids: [...sched.channel_ids]
+    })
+    ElMessage.success('定时摘要设置已保存')
+  } catch (e) {
+    showErr(e, '保存失败')
+  } finally {
+    schedSaving.value = false
+  }
+}
+
 async function remove(row) {
   try {
     await ElMessageBox.confirm(`确定删除通道「${row.name}」吗？`, '提示', { type: 'warning' })
@@ -319,7 +438,10 @@ async function remove(row) {
   }
 }
 
-onMounted(load)
+onMounted(() => {
+  load()
+  loadSchedule()
+})
 </script>
 
 <style scoped>
@@ -335,6 +457,18 @@ onMounted(load)
 }
 .muted {
   color: #909399;
+}
+.event-tag {
+  margin-right: 4px;
+  margin-bottom: 2px;
+}
+.sched-card {
+  margin-top: 16px;
+}
+.card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
 }
 .hint {
   color: #909399;

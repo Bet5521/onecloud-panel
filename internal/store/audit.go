@@ -8,6 +8,7 @@ import (
 type AuditFilter struct {
 	Username string
 	Module   string
+	Action   string
 	Result   string
 	Start    int64 // unix 秒，0 表示不限
 	End      int64
@@ -41,6 +42,10 @@ func (s *Store) QueryAuditLogs(f AuditFilter) ([]AuditLog, int64, error) {
 	if f.Module != "" {
 		where = append(where, "module = ?")
 		args = append(args, f.Module)
+	}
+	if f.Action != "" {
+		where = append(where, "action = ?")
+		args = append(args, f.Action)
 	}
 	if f.Result != "" {
 		where = append(where, "result = ?")

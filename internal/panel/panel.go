@@ -79,6 +79,11 @@ func Run(cfg *config.Panel) error {
 	apiObj := api.New(s, authH, auth.NewMiddleware(sessions), asvc,
 		nodeSvc, recipeReg, taskRunner, appManager)
 
+	// 应用生命周期事件 → 通知分发引擎（通道级 × 用户级两级订阅过滤）
+	appManager.NotifyEvent = func(event, title, body string) {
+		apiObj.EmitEvent(event, title, body)
+	}
+
 	// 发布目录：默认 <data-dir>/releases，放置各架构二进制供 install.sh 下载
 	releaseDir := cfg.ReleaseDir
 	if releaseDir == "" {
@@ -110,6 +115,10 @@ func Run(cfg *config.Panel) error {
 	// ---- 后台任务运行器 ----
 	go taskRunner.Start(ctx)
 
+	// ---- 通知状态探测（节点/应用上线离线）与定时摘要循环 ----
+	go apiObj.NotifyProbeLoop(ctx)
+	go apiObj.NotifyScheduleLoop(ctx)
+
 	// ---- 本机节点初始化与周期刷新 ----
 	refreshLocalNode(nodeSvc)
 	go localNodeLoop(ctx, nodeSvc)
@@ -137,6 +146,8 @@ func Run(cfg *config.Panel) error {
 
 	// ---- 从面板设置加载 TLS 状态（默认关闭；命令行 --tls-cert/--tls-key 优先） ----
 	tlsCfg, forceHTTPS := loadTLSConfig(s, cfg)
+	// 启用 HTTPS 时给会话 Cookie 加 Secure 属性（明文链路不再回传会话令牌）
+	sessions.SetSecure(tlsCfg != nil || forceHTTPS)
 
 	rootHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// 强制 HTTPS：明文 HTTP 请求 301 跳转到 HTTPS（健康检查除外）
@@ -166,8 +177,12 @@ func Run(cfg *config.Panel) error {
 	go maintenanceLoop(ctx, s, asvc)
 
 	srv := &http.Server{
-		Handler:           mux,
+		Handler:           api.SecurityChain(mux),
 		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       5 * time.Minute, // 允许大文件上传/慢速请求体，但不做无限等待
+		WriteTimeout:      0,               // 日志流/任务流为长连接，由 ctx 控制
+		IdleTimeout:       2 * time.Minute,
+		MaxHeaderBytes:    1 << 20,
 	}
 
 	// 同一 TCP 端口嗅探 HTTP/HTTPS（tlsCfg 为 nil 时纯 HTTP）

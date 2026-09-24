@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"math/big"
 	"strings"
 
 	"golang.org/x/crypto/argon2"
@@ -70,17 +71,24 @@ const superCodeAlphabet = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"
 
 const superCodeLen = 10
 
-// GenerateSuperCode 生成 10 位超级验证码明文。
-func GenerateSuperCode() (string, error) {
-	b := make([]byte, superCodeLen)
-	if _, err := rand.Read(b); err != nil {
-		return "", err
-	}
-	out := make([]byte, superCodeLen)
-	for i, c := range b {
-		out[i] = superCodeAlphabet[int(c)%len(superCodeAlphabet)]
+// randomCode 从字母表等概率取样（拒绝取模偏差：取值空间与字母表长度不整除时，
+// 简单取模会让前几个字符更常见，直接削弱随机码熵）。
+func randomCode(alphabet string, length int) (string, error) {
+	max := big.NewInt(int64(len(alphabet)))
+	out := make([]byte, length)
+	for i := range out {
+		n, err := rand.Int(rand.Reader, max)
+		if err != nil {
+			return "", err
+		}
+		out[i] = alphabet[n.Int64()]
 	}
 	return string(out), nil
+}
+
+// GenerateSuperCode 生成 10 位超级验证码明文。
+func GenerateSuperCode() (string, error) {
+	return randomCode(superCodeAlphabet, superCodeLen)
 }
 
 // HashSuperCode 对超级验证码做 SHA-256 哈希（hex）。
@@ -100,4 +108,27 @@ func VerifySuperCode(code, hash string) bool {
 		return false
 	}
 	return subtle.ConstantTimeCompare(got[:], want) == 1
+}
+
+// RandomCode 暴露等概率随机码生成（重置码等场景复用，避免取模偏差）。
+func RandomCode(alphabet string, length int) (string, error) {
+	return randomCode(alphabet, length)
+}
+
+// dummyHash 用于「用户不存在」时的等时校验：预置一份 argon2id 哈希，
+// 让不存在用户的登录耗时与密码错误的用户一致，避免用响应耗时枚举账号。
+var dummyHash string
+
+func init() {
+	if h, err := HashPassword("onecloud-panel-timing-equalizer"); err == nil {
+		dummyHash = h
+	}
+}
+
+// DummyVerify 对不存在的用户执行一次等价的 argon2id 校验（结果恒为 false）。
+func DummyVerify(password string) {
+	if dummyHash == "" {
+		return
+	}
+	_, _ = VerifyPassword(password, dummyHash)
 }

@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -20,6 +21,7 @@ type notificationChannelDTO struct {
 	Config     map[string]any `json:"config"`
 	Enabled    bool           `json:"enabled"`
 	Configured bool           `json:"configured"` // 配置是否完整（可成功构建发送器）
+	Events     []string       `json:"events"`     // 订阅的事件编码列表
 	TestedAt   int64          `json:"tested_at"`
 }
 
@@ -85,6 +87,10 @@ func encodeConfig(typ, oldJSON string, cfg map[string]string) (string, error) {
 
 func (a *API) channelDTO(c store.NotificationChannel) notificationChannelDTO {
 	_, configured := notify.Build(c.Type, parseConfig(c.ConfigJSON))
+	events := []string{}
+	if evs, err := a.store.ListChannelEvents(c.ID); err == nil && len(evs) > 0 {
+		events = evs
+	}
 	return notificationChannelDTO{
 		ID:         c.ID,
 		Type:       c.Type,
@@ -93,6 +99,7 @@ func (a *API) channelDTO(c store.NotificationChannel) notificationChannelDTO {
 		Config:     maskConfig(c.Type, parseConfig(c.ConfigJSON)),
 		Enabled:    c.Enabled,
 		Configured: configured == nil,
+		Events:     events,
 		TestedAt:   c.TestedAt,
 	}
 }
@@ -102,6 +109,31 @@ type channelReq struct {
 	Name    string            `json:"name"`
 	Config  map[string]string `json:"config"`
 	Enabled *bool             `json:"enabled"`
+	Events  []string          `json:"events"` // 订阅的事件编码列表
+}
+
+// normalizeEvents 校验事件编码并去重；输入非 nil 时返回非 nil 列表（空列表表示清空订阅）。
+func normalizeEvents(events []string) ([]string, error) {
+	if events == nil {
+		return nil, nil
+	}
+	out := make([]string, 0, len(events))
+	seen := map[string]bool{}
+	for _, e := range events {
+		e = strings.TrimSpace(e)
+		if e == "" {
+			continue
+		}
+		if !notify.ValidEvent(e) {
+			return nil, fmt.Errorf("未知的通知事件: %s", e)
+		}
+		if seen[e] {
+			continue
+		}
+		seen[e] = true
+		out = append(out, e)
+	}
+	return out, nil
 }
 
 // GET /api/notifications/channels
@@ -153,11 +185,20 @@ func (a *API) createNotificationChannel(w http.ResponseWriter, r *http.Request) 
 			return
 		}
 	}
+	notifyEvents, err := normalizeEvents(req.Events)
+	if err != nil {
+		writeError(w, 400, err.Error())
+		return
+	}
 	c, err := a.store.CreateNotificationChannel(&store.NotificationChannel{
 		Type: req.Type, Name: req.Name, ConfigJSON: cfgJSON, Enabled: enabled,
 	})
 	if err != nil {
 		writeError(w, 500, "创建通知通道失败")
+		return
+	}
+	if err := a.store.SetChannelEvents(c.ID, notifyEvents); err != nil {
+		writeError(w, 500, "事件订阅保存失败")
 		return
 	}
 	a.audit.Record(r, "settings", "notify_channel_create", "settings",
@@ -207,9 +248,24 @@ func (a *API) updateNotificationChannel(w http.ResponseWriter, r *http.Request) 
 			return
 		}
 	}
+	var notifyEvents []string
+	if req.Events != nil {
+		evs, nerr := normalizeEvents(req.Events)
+		if nerr != nil {
+			writeError(w, 400, nerr.Error())
+			return
+		}
+		notifyEvents = evs
+	}
 	if err := a.store.UpdateNotificationChannel(id, name, cfgJSON, enabled); err != nil {
 		writeError(w, 500, "更新通知通道失败")
 		return
+	}
+	if req.Events != nil {
+		if err := a.store.SetChannelEvents(id, notifyEvents); err != nil {
+			writeError(w, 500, "事件订阅保存失败")
+			return
+		}
 	}
 	a.audit.Record(r, "settings", "notify_channel_update", "settings",
 		strconv.FormatInt(id, 10), audit.ResultSuccess, "")
@@ -295,4 +351,100 @@ func (a *API) notifyAll(title, body string) (int, error) {
 		sent++
 	}
 	return sent, firstErr
+}
+
+// ---- 定时状态摘要设置 ----
+
+type notificationScheduleDTO struct {
+	Enabled       bool    `json:"enabled"`
+	IntervalHours int     `json:"interval_hours"`
+	IncludeNodes  bool    `json:"include_nodes"`
+	IncludeApps   bool    `json:"include_apps"`
+	ChannelIDs    []int64 `json:"channel_ids"`
+	UpdatedAt     int64   `json:"updated_at"`
+}
+
+// GET /api/settings/notifications/schedule
+func (a *API) getNotificationSchedule(w http.ResponseWriter, r *http.Request) {
+	sc, err := a.store.GetNotificationSchedule()
+	if err != nil {
+		writeError(w, 500, "查询失败")
+		return
+	}
+	ids := sc.ChannelIDs
+	if ids == nil {
+		ids = []int64{}
+	}
+	writeJSON(w, notificationScheduleDTO{
+		Enabled: sc.Enabled, IntervalHours: sc.IntervalHours,
+		IncludeNodes: sc.IncludeNodes, IncludeApps: sc.IncludeApps,
+		ChannelIDs: ids, UpdatedAt: sc.UpdatedAt,
+	})
+}
+
+type notificationScheduleReq struct {
+	Enabled       *bool   `json:"enabled"`
+	IntervalHours int     `json:"interval_hours"`
+	IncludeNodes  *bool   `json:"include_nodes"`
+	IncludeApps   *bool   `json:"include_apps"`
+	ChannelIDs    []int64 `json:"channel_ids"`
+}
+
+// PUT /api/settings/notifications/schedule
+func (a *API) updateNotificationSchedule(w http.ResponseWriter, r *http.Request) {
+	var req notificationScheduleReq
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, 400, "请求格式错误")
+		return
+	}
+	validIntervals := map[int]bool{1: true, 6: true, 12: true, 24: true}
+	if !validIntervals[req.IntervalHours] {
+		writeError(w, 400, "间隔仅支持 1/6/12/24 小时")
+		return
+	}
+	ids := req.ChannelIDs
+	if ids == nil {
+		ids = []int64{}
+	}
+	seen := map[int64]bool{}
+	for _, id := range ids {
+		if seen[id] {
+			writeError(w, 400, "通道重复选择")
+			return
+		}
+		seen[id] = true
+		if _, err := a.store.NotificationChannelByID(id); err != nil {
+			writeError(w, 400, fmt.Sprintf("通道 #%d 不存在", id))
+			return
+		}
+	}
+	enabled := false
+	if req.Enabled != nil {
+		enabled = *req.Enabled
+	}
+	includeNodes, includeApps := true, true
+	if req.IncludeNodes != nil {
+		includeNodes = *req.IncludeNodes
+	}
+	if req.IncludeApps != nil {
+		includeApps = *req.IncludeApps
+	}
+	if err := a.store.SaveNotificationSchedule(&store.NotificationSchedule{
+		Enabled: enabled, IntervalHours: req.IntervalHours,
+		IncludeNodes: includeNodes, IncludeApps: includeApps,
+		ChannelIDs: ids,
+	}); err != nil {
+		writeError(w, 500, "保存失败")
+		return
+	}
+	a.audit.Record(r, "settings", "notify_schedule_update", "settings", "schedule",
+		audit.ResultSuccess, audit.DetailJSON(map[string]any{
+			"enabled": enabled, "interval_hours": req.IntervalHours, "channels": len(ids)}))
+	sc, _ := a.store.GetNotificationSchedule()
+	out := notificationScheduleDTO{
+		Enabled: sc.Enabled, IntervalHours: sc.IntervalHours,
+		IncludeNodes: sc.IncludeNodes, IncludeApps: sc.IncludeApps,
+		ChannelIDs: ids, UpdatedAt: sc.UpdatedAt,
+	}
+	writeJSON(w, out)
 }

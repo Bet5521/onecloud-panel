@@ -13,30 +13,36 @@ import (
 )
 
 type userDTO struct {
-	ID              int64  `json:"id"`
-	Username        string `json:"username"`
-	RealName        string `json:"real_name"`
-	Phone           string `json:"phone"`
-	NotifyMethod    string `json:"notify_method"`
-	NotifyEmail     string `json:"notify_email"`
-	NotifySMSPhone  string `json:"notify_sms_phone"`
-	NotifyChannelID int64  `json:"notify_channel_id"` // 0 = 未指定
-	NotifyTarget    string `json:"notify_target"`     // 每用户接收标识(UUID/Key/手机号)
-	RoleID          int64  `json:"role_id"`
-	RoleCode        string `json:"role_code"`
-	RoleName        string `json:"role_name"`
-	Status          string `json:"status"`
-	CreatedAt       int64  `json:"created_at"`
-	SuperCode       string `json:"super_code,omitempty"` // 仅创建/重置响应返回一次明文
+	ID              int64    `json:"id"`
+	Username        string   `json:"username"`
+	RealName        string   `json:"real_name"`
+	Phone           string   `json:"phone"`
+	NotifyMethod    string   `json:"notify_method"`
+	NotifyEmail     string   `json:"notify_email"`
+	NotifySMSPhone  string   `json:"notify_sms_phone"`
+	NotifyChannelID int64    `json:"notify_channel_id"` // 0 = 未指定
+	NotifyTarget    string   `json:"notify_target"`     // 每用户接收标识(UUID/Key/手机号)
+	NotifyEvents    []string `json:"notify_events"`     // 订阅的事件编码列表
+	RoleID          int64    `json:"role_id"`
+	RoleCode        string   `json:"role_code"`
+	RoleName        string   `json:"role_name"`
+	Status          string   `json:"status"`
+	CreatedAt       int64    `json:"created_at"`
+	SuperCode       string   `json:"super_code,omitempty"` // 仅创建/重置响应返回一次明文
 }
 
-func toUserDTO(u store.User, roles []store.Role) userDTO {
+func (a *API) toUserDTO(u store.User, roles []store.Role) userDTO {
 	d := userDTO{ID: u.ID, Username: u.Username, RealName: u.RealName, Phone: u.Phone,
 		NotifyMethod: u.NotifyMethod, NotifyEmail: u.NotifyEmail, NotifySMSPhone: u.NotifySMSPhone,
 		NotifyTarget: derefStr(u.NotifyTarget),
 		RoleID:       u.RoleID, Status: u.Status, CreatedAt: u.CreatedAt}
 	if u.NotifyChannelID != nil {
 		d.NotifyChannelID = *u.NotifyChannelID
+	}
+	if evs, err := a.store.ListUserEvents(u.ID); err == nil && len(evs) > 0 {
+		d.NotifyEvents = evs
+	} else {
+		d.NotifyEvents = []string{}
 	}
 	for _, r := range roles {
 		if r.ID == u.RoleID {
@@ -149,7 +155,7 @@ func (a *API) listUsers(w http.ResponseWriter, r *http.Request) {
 	roles, _ := a.store.ListRoles()
 	out := make([]userDTO, 0, len(users))
 	for _, u := range users {
-		out = append(out, toUserDTO(u, roles))
+		out = append(out, a.toUserDTO(u, roles))
 	}
 	writeJSON(w, map[string]any{"items": out, "total": len(out)})
 }
@@ -167,16 +173,17 @@ func (a *API) newSuperCode(userID int64) (string, error) {
 }
 
 type createUserReq struct {
-	Username        string  `json:"username"`
-	Password        string  `json:"password"`
-	RoleID          int64   `json:"role_id"`
-	RealName        string  `json:"real_name"`
-	Phone           string  `json:"phone"`
-	NotifyMethod    string  `json:"notify_method"`
-	NotifyEmail     string  `json:"notify_email"`
-	NotifySMSPhone  string  `json:"notify_sms_phone"`
-	NotifyChannelID int64   `json:"notify_channel_id"`
-	NotifyTarget    *string `json:"notify_target"`
+	Username        string   `json:"username"`
+	Password        string   `json:"password"`
+	RoleID          int64    `json:"role_id"`
+	RealName        string   `json:"real_name"`
+	Phone           string   `json:"phone"`
+	NotifyMethod    string   `json:"notify_method"`
+	NotifyEmail     string   `json:"notify_email"`
+	NotifySMSPhone  string   `json:"notify_sms_phone"`
+	NotifyChannelID int64    `json:"notify_channel_id"`
+	NotifyTarget    *string  `json:"notify_target"`
+	NotifyEvents    []string `json:"notify_events"`
 }
 
 // POST /api/users
@@ -199,6 +206,10 @@ func (a *API) createUser(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "用户名长度需为 3-32")
 		return
 	}
+	if err := auth.ValidateUsername(req.Username); err != nil {
+		writeError(w, 400, err.Error())
+		return
+	}
 	if len(req.Password) < 8 || len(req.Password) > 128 {
 		writeError(w, 400, "密码长度需为 8-128")
 		return
@@ -218,6 +229,11 @@ func (a *API) createUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := a.validateNotify(req.NotifyMethod, req.NotifyChannelID, req.NotifyTarget); err != nil {
+		writeError(w, 400, err.Error())
+		return
+	}
+	notifyEvents, err := normalizeEvents(req.NotifyEvents)
+	if err != nil {
 		writeError(w, 400, err.Error())
 		return
 	}
@@ -244,6 +260,12 @@ func (a *API) createUser(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 500, "通知方式保存失败")
 		return
 	}
+	if req.NotifyEvents != nil {
+		if err := a.store.SetUserEvents(u.ID, notifyEvents); err != nil {
+			writeError(w, 500, "事件订阅保存失败")
+			return
+		}
+	}
 	u, err = a.store.UserByID(u.ID)
 	if err != nil {
 		writeError(w, 500, "创建用户失败")
@@ -260,21 +282,22 @@ func (a *API) createUser(w http.ResponseWriter, r *http.Request) {
 			"username": u.Username, "role_id": u.RoleID,
 		}))
 	roles, _ := a.store.ListRoles()
-	dto := toUserDTO(*u, roles)
+	dto := a.toUserDTO(*u, roles)
 	dto.SuperCode = code
 	writeJSON(w, dto)
 }
 
 type updateUserReq struct {
-	RoleID          *int64  `json:"role_id"`
-	Status          *string `json:"status"`
-	RealName        *string `json:"real_name"`
-	Phone           *string `json:"phone"`
-	NotifyMethod    *string `json:"notify_method"`
-	NotifyEmail     *string `json:"notify_email"`
-	NotifySMSPhone  *string `json:"notify_sms_phone"`
-	NotifyChannelID *int64  `json:"notify_channel_id"` // 0 = 清除
-	NotifyTarget    *string `json:"notify_target"`
+	RoleID          *int64   `json:"role_id"`
+	Status          *string  `json:"status"`
+	RealName        *string  `json:"real_name"`
+	Phone           *string  `json:"phone"`
+	NotifyMethod    *string  `json:"notify_method"`
+	NotifyEmail     *string  `json:"notify_email"`
+	NotifySMSPhone  *string  `json:"notify_sms_phone"`
+	NotifyChannelID *int64   `json:"notify_channel_id"` // 0 = 清除
+	NotifyTarget    *string  `json:"notify_target"`
+	NotifyEvents    []string `json:"notify_events"`
 }
 
 // PUT /api/users/{id}
@@ -315,6 +338,16 @@ func (a *API) updateUser(w http.ResponseWriter, r *http.Request) {
 			writeError(w, 400, "角色不存在")
 			return
 		}
+	}
+	// 事件订阅先行校验（在应用任何变更前），避免部分生效
+	var notifyEvents []string
+	if req.NotifyEvents != nil {
+		evs, nerr := normalizeEvents(req.NotifyEvents)
+		if nerr != nil {
+			writeError(w, 400, nerr.Error())
+			return
+		}
+		notifyEvents = evs
 	}
 	realName, phone := "", ""
 	hasProfile := false
@@ -409,6 +442,12 @@ func (a *API) updateUser(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if req.NotifyEvents != nil {
+		if err := a.store.SetUserEvents(id, notifyEvents); err != nil {
+			writeError(w, 500, "事件订阅保存失败")
+			return
+		}
+	}
 	a.audit.Record(r, "user", "update", "user", strconv.FormatInt(id, 10),
 		audit.ResultSuccess, audit.DetailJSON(map[string]any{
 			"role_id": req.RoleID, "status": req.Status,
@@ -416,9 +455,13 @@ func (a *API) updateUser(w http.ResponseWriter, r *http.Request) {
 			"notify_method": req.NotifyMethod,
 		}))
 
-	u, _ := a.store.UserByID(id)
+	u, err := a.store.UserByID(id)
+	if err != nil || u == nil {
+		writeError(w, 500, "用户读取失败")
+		return
+	}
 	roles, _ := a.store.ListRoles()
-	writeJSON(w, toUserDTO(*u, roles))
+	writeJSON(w, a.toUserDTO(*u, roles))
 }
 
 type passwordReq struct {
@@ -492,13 +535,14 @@ func (a *API) regenerateSuperCode(w http.ResponseWriter, r *http.Request) {
 }
 
 type myProfileReq struct {
-	RealName        string  `json:"real_name"`
-	Phone           string  `json:"phone"`
-	NotifyMethod    *string `json:"notify_method"`
-	NotifyEmail     *string `json:"notify_email"`
-	NotifySMSPhone  *string `json:"notify_sms_phone"`
-	NotifyChannelID *int64  `json:"notify_channel_id"` // 0 = 清除
-	NotifyTarget    *string `json:"notify_target"`
+	RealName        string   `json:"real_name"`
+	Phone           string   `json:"phone"`
+	NotifyMethod    *string  `json:"notify_method"`
+	NotifyEmail     *string  `json:"notify_email"`
+	NotifySMSPhone  *string  `json:"notify_sms_phone"`
+	NotifyChannelID *int64   `json:"notify_channel_id"` // 0 = 清除
+	NotifyTarget    *string  `json:"notify_target"`
+	NotifyEvents    []string `json:"notify_events"`
 }
 
 // PUT /api/auth/profile — 本人更新姓名、手机号与通知方式。
@@ -565,6 +609,17 @@ func (a *API) updateMyProfile(w http.ResponseWriter, r *http.Request) {
 		}
 		if err := a.store.UpdateUserNotify(ident.User.ID, method, email, smsPhone, channelPtr(chID), tgt); err != nil {
 			writeError(w, 500, "通知方式更新失败")
+			return
+		}
+	}
+	if req.NotifyEvents != nil {
+		evs, nerr := normalizeEvents(req.NotifyEvents)
+		if nerr != nil {
+			writeError(w, 400, nerr.Error())
+			return
+		}
+		if err := a.store.SetUserEvents(ident.User.ID, evs); err != nil {
+			writeError(w, 500, "事件订阅保存失败")
 			return
 		}
 	}
@@ -650,9 +705,64 @@ func (a *API) changePassword(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 500, "密码更新失败")
 		return
 	}
+	// 改密后注销其他设备上的会话（保留当前登录），防止凭据泄露后被继续使用
+	revoked := 0
+	if a.sessions != nil {
+		if n, serr := a.sessions.RevokeOtherSessions(ident.User.ID, a.sessions.CurrentSID(r)); serr == nil {
+			revoked = n
+		}
+	}
 	a.audit.Record(r, "user", "change_password", "user",
 		strconv.FormatInt(ident.User.ID, 10), audit.ResultSuccess, "")
-	writeJSON(w, map[string]string{"status": "ok"})
+	writeJSON(w, map[string]any{"status": "ok", "revoked_sessions": revoked})
+}
+
+// GET /api/auth/my-notify-events — 本人订阅的通知事件。
+func (a *API) getMyNotifyEvents(w http.ResponseWriter, r *http.Request) {
+	ident := auth.FromContext(r.Context())
+	if ident == nil || ident.User == nil {
+		writeError(w, 401, "未登录")
+		return
+	}
+	evs := []string{}
+	if list, err := a.store.ListUserEvents(ident.User.ID); err == nil && len(list) > 0 {
+		evs = list
+	}
+	writeJSON(w, map[string]any{"events": evs})
+}
+
+type myNotifyEventsReq struct {
+	Events []string `json:"events"`
+}
+
+// PUT /api/auth/notify-events — 本人更新事件订阅。
+func (a *API) updateMyNotifyEvents(w http.ResponseWriter, r *http.Request) {
+	ident := auth.FromContext(r.Context())
+	if ident == nil || ident.User == nil {
+		writeError(w, 401, "未登录")
+		return
+	}
+	var req myNotifyEventsReq
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, 400, "请求格式错误")
+		return
+	}
+	evs, err := normalizeEvents(req.Events)
+	if err != nil {
+		writeError(w, 400, err.Error())
+		return
+	}
+	if err := a.store.SetUserEvents(ident.User.ID, evs); err != nil {
+		writeError(w, 500, "保存失败")
+		return
+	}
+	a.audit.Record(r, "user", "update_notify_events", "user",
+		strconv.FormatInt(ident.User.ID, 10), audit.ResultSuccess,
+		audit.DetailJSON(map[string]any{"events": evs}))
+	if evs == nil {
+		evs = []string{}
+	}
+	writeJSON(w, map[string]any{"events": evs})
 }
 
 func isActiveAdmin(s *store.Store, u *store.User) bool {

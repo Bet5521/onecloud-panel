@@ -67,6 +67,10 @@ type githubAppConfig struct {
 
 // SynthRecipe 由自定义应用记录合成一份可安装的 *Recipe。
 func (m *Manager) SynthRecipe(app *store.CustomApp) (*recipes.Recipe, error) {
+	// 入口统一校验：名称/路径/字符集约束（防 systemd 单元注入与任意路径写入）
+	if err := ValidateCustomConfig(app); err != nil {
+		return nil, err
+	}
 	id := customRecipeID(app.ID)
 	base := recipes.Recipe{
 		APIVersion:  1,
@@ -109,6 +113,8 @@ func (m *Manager) SynthRecipe(app *store.CustomApp) (*recipes.Recipe, error) {
 		work := strings.TrimSpace(c.WorkDir)
 		if work == "" {
 			work = "/opt/onecloud-apps/" + strconv.FormatInt(app.ID, 10)
+		} else if norm, err := safeWorkDir(work); err == nil {
+			work = norm
 		}
 		base.Methods = []string{"native"}
 		base.Native = &recipes.NativeSpec{
@@ -205,7 +211,7 @@ WantedBy=multi-user.target
 }
 
 func buildRunUnit(name, src, run string) string {
-	// 防止破坏 shell 字符串：剔除双引号（管理员自定义应用，信任来源）
+	// 防止破坏 shell 字符串：剔除双引号（入口校验已禁止引号/换行/%，这里再兜一层）
 	run = strings.ReplaceAll(run, `"`, "")
 	return fmt.Sprintf(`[Unit]
 Description=%s (OneCloud 自定义应用)
@@ -271,6 +277,9 @@ func (m *Manager) PushCustomBinary(ctx context.Context, w io.Writer,
 	if execName == "" {
 		return errors.New("未指定 exec_name")
 	}
+	if err := safeExecName(execName); err != nil {
+		return err
+	}
 	src := filepath.Join(m.binaryDir, strconv.FormatInt(app.ID, 10), "app")
 	data, err := os.ReadFile(src)
 	if err != nil {
@@ -287,6 +296,12 @@ func (m *Manager) PushCustomBinary(ctx context.Context, w io.Writer,
 	work := strings.TrimSpace(c.WorkDir)
 	if work == "" {
 		work = "/opt/onecloud-apps/" + strconv.FormatInt(app.ID, 10)
+	} else {
+		norm, err := safeWorkDir(work)
+		if err != nil {
+			return err
+		}
+		work = norm
 	}
 	if _, err := ex.Exec(ctx, "mkdir", "-p", work); err != nil {
 		return fmt.Errorf("创建应用目录失败: %w", err)

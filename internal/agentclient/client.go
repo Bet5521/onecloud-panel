@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -35,11 +36,18 @@ type Client struct {
 // execTimeout 执行类请求的客户端超时上限。
 const execTimeout = 30 * time.Minute
 
-// New 创建客户端，address 为 host:port。
+// New 创建客户端，address 为 [http(s)://]host:port。
+// 安全策略：未显式指定 scheme 时，私网/回环/CGNAT 地址回退 http://（内网明文可接受）；
+// 公网地址拒绝明文 http 回退，改用 https://——Token 经 Bearer 头传输，公网明文可被窃听。
+// 公网节点如确无 TLS 条件，请显式填写 http:// 前缀（自担风险），或为 Agent 配置 TLS 反向代理。
 func New(address, token string) *Client {
 	base := address
 	if !strings.HasPrefix(base, "http://") && !strings.HasPrefix(base, "https://") {
-		base = "http://" + base
+		if isPublicHost(address) {
+			base = "https://" + address
+		} else {
+			base = "http://" + address
+		}
 	}
 	return &Client{
 		baseURL:  strings.TrimRight(base, "/"),
@@ -47,6 +55,28 @@ func New(address, token string) *Client {
 		http:     &http.Client{Timeout: 30 * time.Second},
 		execHTTP: &http.Client{Timeout: execTimeout},
 	}
+}
+
+// isPublicHost 判断地址的 host 部分是否为公网地址（非回环/私网/链路本地/CGNAT）。
+func isPublicHost(addr string) bool {
+	host := addr
+	if h, _, err := net.SplitHostPort(addr); err == nil {
+		host = h
+	}
+	host = strings.Trim(host, "[]")
+	if ip := net.ParseIP(host); ip != nil {
+		if v4 := ip.To4(); v4 != nil {
+			// CGNAT 共享地址段（100.64.0.0/10，常见于 Tailscale/组网工具）按私网对待
+			if v4[0] == 100 && v4[1] >= 64 && v4[1] < 128 {
+				return false
+			}
+		}
+		return !(ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() ||
+			ip.IsLinkLocalMulticast() || ip.IsUnspecified())
+	}
+	// 域名：localhost 视为本地，其余保守按公网处理
+	h := strings.ToLower(strings.TrimSuffix(host, "."))
+	return h != "localhost" && !strings.HasSuffix(h, ".localhost")
 }
 
 func (c *Client) req(ctx context.Context, method, path string, body any) (*http.Response, error) {

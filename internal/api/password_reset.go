@@ -1,7 +1,6 @@
 package api
 
 import (
-	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
@@ -20,6 +19,12 @@ const (
 	resetCodeLen  = 8
 	resetTTL      = 15 * time.Minute
 	resetAlphabet = "ABCDEFGHJKMNPQRSTUVWXYZ23456789" // 去除易混字符 I/L/O/0/1
+)
+
+// 重置码确认接口的防爆破限流：15 分钟内累计 10 次失败即拒绝。
+const (
+	resetConfirmMaxFails = 10
+	resetConfirmWindow   = 15 * time.Minute
 )
 
 // SetResetLimiter 注入重置接口限流器。
@@ -94,12 +99,15 @@ func (a *API) resetRequest(w http.ResponseWriter, r *http.Request) {
 				log.Printf("[密码重置] %s 方式下发失败: %v", method, derr)
 			}
 			if delivery == "" {
-				delivery = "无可用下发渠道，仅输出到服务日志"
+				// 兜底：仅当无可用下发渠道（含用户选择日志方式）时才把验证码写入服务日志，
+				// 由具备服务器访问权限的管理员取用；面板内 journal 视图会过滤此类行
+				log.Printf("===== [密码重置] 用户 %s 的重置码：%s （15 分钟内有效） =====",
+					username, code)
+				delivery = "无可用下发渠道，已输出到服务日志"
+			} else {
+				// 下发成功：日志只记录渠道，不落验证码
+				log.Printf("[密码重置] 用户 %s 的重置码已通过 %s 下发", username, delivery)
 			}
-
-			// 兜底（始终输出）：面板服务日志，具备服务器访问权限的管理员可取用
-			log.Printf("===== [密码重置] 用户 %s 的重置码：%s （15 分钟内有效，%s） =====",
-				username, code, delivery)
 
 			if a.codeSink != nil {
 				a.codeSink(username, code)
@@ -109,8 +117,8 @@ func (a *API) resetRequest(w http.ResponseWriter, r *http.Request) {
 
 	hint := resetDeliveryHint()
 	if method == "notification" {
-		hint = "若用户名有效，重置码已按该用户绑定的通知方式定向下发（邮箱/短信/通知通道），" +
-			"同时输出到面板服务日志：journalctl -u onecloud-panel"
+		hint = "若用户名有效，重置码已按该用户绑定的通知方式定向下发（邮箱/短信/通知通道）；" +
+			"仅当无可用渠道时才输出到服务日志（journalctl -u onecloud-panel）"
 	}
 	writeJSON(w, map[string]any{
 		"status": "ok",
@@ -192,6 +200,16 @@ func (a *API) confirmBySuperCode(w http.ResponseWriter, r *http.Request,
 // confirmByResetCode 短期重置码验证（邮箱/通知渠道下发）。
 func (a *API) confirmByResetCode(w http.ResponseWriter, r *http.Request,
 	u *store.User, code, newPassword string) {
+	// 防爆破：重置码 8 位、15 分钟有效，不限流则可暴力枚举。
+	// 与超级验证码路径一样按 IP + 用户名双键限流，超限直接拒绝。
+	ip := auth.ClientIP(r)
+	if a.confirmLimit == nil {
+		a.confirmLimit = auth.NewLoginLimiter(resetConfirmMaxFails, resetConfirmWindow)
+	}
+	if !a.confirmLimit.Allow(ip) || !a.confirmLimit.Allow(u.Username) {
+		writeError(w, http.StatusTooManyRequests, "尝试过于频繁，请稍后再试")
+		return
+	}
 	rec, err := a.store.GetActivePasswordReset(u.ID, time.Now().Unix())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "重置记录查询失败")
@@ -205,9 +223,13 @@ func (a *API) confirmByResetCode(w http.ResponseWriter, r *http.Request,
 	want, _ := hex.DecodeString(rec.CodeHash)
 	got := sha256.Sum256([]byte(code))
 	if subtle.ConstantTimeCompare(want, got[:]) != 1 {
+		a.confirmLimit.Fail(ip)
+		a.confirmLimit.Fail(u.Username)
 		writeError(w, http.StatusBadRequest, "重置码无效或已过期")
 		return
 	}
+	a.confirmLimit.Reset(ip)
+	a.confirmLimit.Reset(u.Username)
 
 	newCode, err := a.finishPasswordReset(u, newPassword)
 	if err != nil {
@@ -252,15 +274,7 @@ func (a *API) finishPasswordReset(u *store.User, newPassword string) (string, er
 }
 
 func genResetCode() (string, error) {
-	b := make([]byte, resetCodeLen)
-	if _, err := rand.Read(b); err != nil {
-		return "", err
-	}
-	out := make([]byte, resetCodeLen)
-	for i, c := range b {
-		out[i] = resetAlphabet[int(c)%len(resetAlphabet)]
-	}
-	return string(out), nil
+	return auth.RandomCode(resetAlphabet, resetCodeLen)
 }
 
 func hashResetCode(code string) string {
@@ -270,6 +284,6 @@ func hashResetCode(code string) string {
 
 // resetDeliveryHint 默认（邮箱方式）提示文案。
 func resetDeliveryHint() string {
-	return "若用户名有效，重置码已发送至该用户绑定的邮箱（未绑定时发往 SMTP 收件人设置），" +
-		"同时输出到面板服务日志：journalctl -u onecloud-panel"
+	return "若用户名有效，重置码已发送至该用户绑定的邮箱（未绑定时发往 SMTP 收件人设置）；" +
+		"仅当无可用渠道时才输出到服务日志（journalctl -u onecloud-panel）"
 }

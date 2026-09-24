@@ -66,18 +66,6 @@ func customAppToDTO(c *store.CustomApp, hasBinary bool) customAppDTO {
 	return d
 }
 
-// customAppOwns 当前用户是否可管理该自定义应用（管理员或创建者）。
-func (a *API) customAppEditable(r *http.Request, c *store.CustomApp) bool {
-	if callerIsAdmin(r) {
-		return true
-	}
-	uid, ok := callerID(r)
-	if !ok {
-		return false
-	}
-	return c.OwnerUserID != nil && *c.OwnerUserID == uid
-}
-
 // GET /api/custom-apps — 自定义应用清单。管理员见全部，普通用户仅见本人创建。
 func (a *API) listCustomApps(w http.ResponseWriter, r *http.Request) {
 	uid, ok := callerID(r)
@@ -126,11 +114,15 @@ func (a *API) getCustomApp(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, customAppToDTO(c, hasBin))
 }
 
-// POST /api/custom-apps — 新建自定义应用。
+// POST /api/custom-apps — 新建自定义应用（仅管理员）。
 func (a *API) createCustomApp(w http.ResponseWriter, r *http.Request) {
 	uid, ok := callerID(r)
 	if !ok {
 		writeError(w, 401, "未登录")
+		return
+	}
+	if !callerIsAdmin(r) {
+		writeError(w, 403, "仅管理员可以创建自定义应用")
 		return
 	}
 	body, err := io.ReadAll(r.Body)
@@ -201,8 +193,8 @@ func (a *API) updateCustomApp(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 404, "自定义应用不存在")
 		return
 	}
-	if !a.customAppEditable(r, c) {
-		writeError(w, 403, "无权修改该应用")
+	if !callerIsAdmin(r) {
+		writeError(w, 403, "仅管理员可以修改自定义应用")
 		return
 	}
 	body, err := io.ReadAll(r.Body)
@@ -238,11 +230,13 @@ func (a *API) updateCustomApp(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	updated, _ := a.store.GetCustomApp(id)
-	if updated != nil {
-		if err := a.apps.RegisterCustomApp(updated); err != nil {
-			writeError(w, 500, "配方重注册失败: "+err.Error())
-			return
-		}
+	if updated == nil {
+		writeError(w, 500, "自定义应用读取失败")
+		return
+	}
+	if err := a.apps.RegisterCustomApp(updated); err != nil {
+		writeError(w, 500, "配方重注册失败: "+err.Error())
+		return
 	}
 	a.audit.Record(r, "app", "custom_update", "custom_app",
 		strconv.FormatInt(id, 10), audit.ResultSuccess, "")
@@ -256,13 +250,12 @@ func (a *API) deleteCustomApp(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "ID 非法")
 		return
 	}
-	c, err := a.store.GetCustomApp(id)
-	if err != nil {
+	if _, err := a.store.GetCustomApp(id); err != nil {
 		writeError(w, 404, "自定义应用不存在")
 		return
 	}
-	if !a.customAppEditable(r, c) {
-		writeError(w, 403, "无权删除该应用")
+	if !callerIsAdmin(r) {
+		writeError(w, 403, "仅管理员可以删除自定义应用")
 		return
 	}
 	a.apps.UnregisterCustomApp(id)
@@ -287,8 +280,8 @@ func (a *API) uploadCustomBinary(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 404, "自定义应用不存在")
 		return
 	}
-	if !a.customAppEditable(r, c) {
-		writeError(w, 403, "无权操作该应用")
+	if !callerIsAdmin(r) {
+		writeError(w, 403, "仅管理员可以上传应用文件")
 		return
 	}
 	if c.Type != "binary" {

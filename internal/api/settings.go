@@ -11,6 +11,9 @@ import (
 	"onecloud-panel/internal/version"
 )
 
+// smtpPasswordMask SMTP 密码掩码回显占位：提交该值或空值时保留原密码不变。
+const smtpPasswordMask = "********"
+
 var editableSettings = map[string]bool{
 	"panel_name":           true,
 	"audit_retention_days": true,
@@ -44,6 +47,10 @@ func (a *API) getSettings(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "设置查询失败")
 		return
+	}
+	// 敏感项掩码回显：SMTP 密码不以明文/密文回传
+	if v := all["smtp_password"]; v != "" {
+		all["smtp_password"] = smtpPasswordMask
 	}
 	writeJSON(w, all)
 }
@@ -121,6 +128,18 @@ func (a *API) updateSettings(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	for k, v := range body {
+		// SMTP 密码特殊处理：空值/掩码占位保留原值；新值加密落库（AES-GCM，密钥在 secret.key）
+		if k == "smtp_password" {
+			if v == "" || v == smtpPasswordMask {
+				continue
+			}
+			enc, serr := a.nodes.SealSecret(v)
+			if serr != nil {
+				writeError(w, http.StatusInternalServerError, "密码加密失败")
+				return
+			}
+			v = enc
+		}
 		if err := a.store.SetSetting(k, v); err != nil {
 			writeError(w, http.StatusInternalServerError, "保存失败")
 			return

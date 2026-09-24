@@ -33,7 +33,7 @@
 
       <el-tab-pane label="自定义应用" name="custom">
         <div class="filter-bar" v-if="can('app:read')">
-          <el-button v-if="can('app:write')" type="primary" @click="openCreateCustom">新建自定义应用</el-button>
+          <el-button v-if="isAdmin" type="primary" @click="openCreateCustom">新建自定义应用</el-button>
           <span class="muted">支持连接 GitHub 源码、Docker 容器、或直接上传二进制程序部署到节点。</span>
         </div>
 
@@ -54,9 +54,9 @@
               <div class="app-actions">
                 <el-button size="small" type="primary" :disabled="!can('app:write') || (c.type === 'binary' && !c.has_binary)"
                   @click="installCustom(c)">安装</el-button>
-                <el-button size="small" :disabled="!can('app:write')" @click="openEditCustom(c)">编辑</el-button>
-                <el-button v-if="c.type === 'binary' && can('app:write')" size="small" @click="pickUpload(c)">上传</el-button>
-                <el-button size="small" type="danger" plain :disabled="!can('app:write')" @click="removeCustom(c)">删除</el-button>
+                <el-button size="small" :disabled="!isAdmin" @click="openEditCustom(c)">编辑</el-button>
+                <el-button v-if="c.type === 'binary' && isAdmin" size="small" @click="pickUpload(c)">上传</el-button>
+                <el-button size="small" type="danger" plain :disabled="!isAdmin" @click="removeCustom(c)">删除</el-button>
               </div>
             </el-card>
           </el-col>

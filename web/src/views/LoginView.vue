@@ -19,6 +19,13 @@
             <el-input v-model="form.password" type="password" size="large" show-password placeholder="请输入密码"
               :prefix-icon="Lock" autocomplete="current-password" @keyup.enter="submit" />
           </el-form-item>
+          <el-form-item v-if="captchaRequired" label="验证码">
+            <div class="captcha-row">
+              <el-input v-model="form.captchaCode" size="large" placeholder="请输入图中字符（不区分大小写）" />
+              <img v-if="captchaImage" :src="captchaImage" class="captcha-img" title="看不清？点击刷新" @click="loadCaptcha" />
+              <el-button text type="primary" @click="loadCaptcha">刷新</el-button>
+            </div>
+          </el-form-item>
           <div class="form-foot">
             <el-button text type="primary" @click="goReset">忘记密码？</el-button>
           </div>
@@ -120,7 +127,7 @@ import { ref, reactive, computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { User, Lock, Key, ArrowLeft } from '@element-plus/icons-vue'
-import { post } from '../api/http'
+import { post, get } from '../api/http'
 import { initSession, session } from '../session'
 import SuperCodeDialog from '../components/SuperCodeDialog.vue'
 
@@ -131,10 +138,33 @@ const loading = ref(false)
 
 // ---- 登录 ----
 const formRef = ref()
-const form = reactive({ username: '', password: '' })
+const form = reactive({ username: '', password: '', captchaCode: '' })
 const rules = {
   username: [{ required: true, message: '请输入用户名', trigger: 'blur' }],
   password: [{ required: true, message: '请输入密码', trigger: 'blur' }]
+}
+
+// ---- 登录验证码：短时间内多次失败后服务端要求（400 + captcha_required） ----
+const captchaRequired = ref(false)
+const captchaID = ref('')
+const captchaImage = ref('')
+
+async function loadCaptcha() {
+  try {
+    const resp = await get('/api/auth/captcha')
+    captchaID.value = resp.captcha_id || ''
+    captchaImage.value = resp.image || ''
+    form.captchaCode = ''
+  } catch (e) {
+    ElMessage.error(e.message || '验证码加载失败')
+  }
+}
+
+function resetCaptcha() {
+  captchaRequired.value = false
+  captchaID.value = ''
+  captchaImage.value = ''
+  form.captchaCode = ''
 }
 
 async function submit() {
@@ -142,7 +172,13 @@ async function submit() {
     if (!valid || loading.value) return
     loading.value = true
     try {
-      await post('/api/auth/login', { username: form.username.trim(), password: form.password })
+      const payload = { username: form.username.trim(), password: form.password }
+      if (captchaRequired.value) {
+        payload.captcha_id = captchaID.value
+        payload.captcha_code = form.captchaCode.trim()
+      }
+      await post('/api/auth/login', payload)
+      resetCaptcha()
       await initSession()
       session.expired = false
       ElMessage.success('登录成功')
@@ -151,6 +187,10 @@ async function submit() {
     } catch (e) {
       if (e.status === 429) {
         ElMessage.error('登录尝试过于频繁，请稍后再试（限流）')
+      } else if (e.status === 400 && e.code === 'captcha_required') {
+        captchaRequired.value = true
+        await loadCaptcha()
+        ElMessage.error(e.message || '请输入验证码后重试')
       } else {
         ElMessage.error(e.message || '登录失败')
       }
@@ -265,6 +305,18 @@ async function confirmReset() {
 .form-foot {
   text-align: right;
   margin: -8px 0 8px;
+}
+.captcha-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+}
+.captcha-img {
+  height: 40px;
+  border-radius: 4px;
+  cursor: pointer;
+  flex-shrink: 0;
 }
 .back-link {
   margin-top: 12px;

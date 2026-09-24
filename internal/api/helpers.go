@@ -6,6 +6,7 @@ import (
 	"strconv"
 
 	"onecloud-panel/internal/auth"
+	"onecloud-panel/internal/store"
 )
 
 // idFromPath 读取 {id} 路径参数。
@@ -34,6 +35,21 @@ func callerID(r *http.Request) (int64, bool) {
 		return 0, false
 	}
 	return ident.User.ID, true
+}
+
+// assertNodeOwner 节点属主断言（防 BOLA）：非管理员仅可操作自己添加的节点，
+// 系统级节点（OwnerUserID 为空）仅管理员可访问。断言失败时返回 404 掩蔽节点存在性。
+// 返回 false 表示已写出错误响应，调用方应立即返回。
+func assertNodeOwner(w http.ResponseWriter, r *http.Request, n *store.Node) bool {
+	if callerIsAdmin(r) {
+		return true
+	}
+	uid, _ := callerID(r)
+	if n.OwnerUserID == nil || *n.OwnerUserID != uid {
+		writeError(w, http.StatusNotFound, "节点不存在")
+		return false
+	}
+	return true
 }
 
 func writeJSON(w http.ResponseWriter, v any) {

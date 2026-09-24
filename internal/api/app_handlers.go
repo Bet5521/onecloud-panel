@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"path/filepath"
@@ -17,11 +18,11 @@ import (
 func nodeAppFromPath(r *http.Request) (int64, string, error) {
 	id, err := idFromPath(r)
 	if err != nil {
-		return 0, "", err
+		return 0, "", fmt.Errorf("节点 ID 非法")
 	}
 	app := r.PathValue("app")
 	if app == "" {
-		return 0, "", http.ErrMissingBoundary
+		return 0, "", fmt.Errorf("缺少应用标识")
 	}
 	return id, app, nil
 }
@@ -55,7 +56,10 @@ func (a *API) installApp(w http.ResponseWriter, r *http.Request) {
 	// 前置校验：配方/节点/架构兼容性（任务失败前直接给出错误）
 	n, err := a.store.GetNode(nodeID)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "节点不存在")
+		writeError(w, http.StatusNotFound, "节点不存在")
+		return
+	}
+	if !assertNodeOwner(w, r, n) {
 		return
 	}
 	rp, ok := a.apps.Registry().Get(appID)
@@ -108,7 +112,19 @@ func (a *API) uninstallApp(w http.ResponseWriter, r *http.Request) {
 	}
 	var req uninstallReq
 	if r.ContentLength > 0 {
-		_ = decodeJSON(r, &req)
+		if err := decodeJSON(r, &req); err != nil {
+			writeError(w, http.StatusBadRequest, "请求格式错误")
+			return
+		}
+	}
+	// 属主断言：非管理员仅可操作自己添加的节点
+	own, gerr := a.store.GetNode(nodeID)
+	if gerr != nil {
+		writeError(w, http.StatusNotFound, "节点不存在")
+		return
+	}
+	if !assertNodeOwner(w, r, own) {
+		return
 	}
 	// 卸载方式以安装记录为准（记录丢失则默认 native，由任务实际处理）。
 	method := "native"
@@ -139,6 +155,14 @@ func (a *API) appServiceAction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	action := r.PathValue("action")
+	n, gerr := a.store.GetNode(nodeID)
+	if gerr != nil {
+		writeError(w, http.StatusNotFound, "节点不存在")
+		return
+	}
+	if !assertNodeOwner(w, r, n) {
+		return
+	}
 	unit, err := a.apps.ServiceAction(r.Context(), nodeID, appID, action)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -157,6 +181,14 @@ func (a *API) listInstallations(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	n, gerr := a.store.GetNode(nodeID)
+	if gerr != nil {
+		writeError(w, http.StatusNotFound, "节点不存在")
+		return
+	}
+	if !assertNodeOwner(w, r, n) {
+		return
+	}
 	items, err := a.store.ListInstallations(nodeID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -172,6 +204,14 @@ func (a *API) appStatus(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	n, gerr := a.store.GetNode(nodeID)
+	if gerr != nil {
+		writeError(w, http.StatusNotFound, "节点不存在")
+		return
+	}
+	if !assertNodeOwner(w, r, n) {
+		return
+	}
 	res, err := a.apps.Status(r.Context(), nodeID, appID)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -185,6 +225,14 @@ func (a *API) appJournal(w http.ResponseWriter, r *http.Request) {
 	nodeID, appID, err := nodeAppFromPath(r)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	n, gerr := a.store.GetNode(nodeID)
+	if gerr != nil {
+		writeError(w, http.StatusNotFound, "节点不存在")
+		return
+	}
+	if !assertNodeOwner(w, r, n) {
 		return
 	}
 	lines := 200
@@ -215,7 +263,14 @@ func (a *API) readAppConfig(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusForbidden, reason)
 		return
 	}
-	n, _ := a.nodes.Get(nodeID)
+	n, err := a.nodes.Get(nodeID)
+	if err != nil || n == nil {
+		writeError(w, http.StatusNotFound, "节点不存在")
+		return
+	}
+	if !assertNodeOwner(w, r, n) {
+		return
+	}
 	ex, err := a.apps.ExecutorFor(n)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -248,7 +303,14 @@ func (a *API) writeAppConfig(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusForbidden, reason)
 		return
 	}
-	n, _ := a.nodes.Get(nodeID)
+	n, err := a.nodes.Get(nodeID)
+	if err != nil || n == nil {
+		writeError(w, http.StatusNotFound, "节点不存在")
+		return
+	}
+	if !assertNodeOwner(w, r, n) {
+		return
+	}
 	ex, err := a.apps.ExecutorFor(n)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())

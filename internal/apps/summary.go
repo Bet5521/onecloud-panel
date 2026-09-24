@@ -59,19 +59,53 @@ func (m *Manager) InstallationSummaryByNode(ctx context.Context) map[int64]Insta
 			out[nodeID] = s
 			continue
 		}
-		m.summarizeNode(ctx, n, list, &s)
+		m.summarizeNode(ctx, n, list, &s, nil)
 		out[nodeID] = s
 	}
 	return out
 }
 
+// AppStatesByNode 返回各在线节点上每个应用的运行状态
+// （节点ID → 应用ID → "running"/"stopped"/"error"）。离线节点不产生条目。
+func (m *Manager) AppStatesByNode(ctx context.Context) map[int64]map[string]string {
+	all, err := m.store.ListAllInstallations()
+	if err != nil || len(all) == 0 {
+		return map[int64]map[string]string{}
+	}
+	now := time.Now().Unix()
+	groups := map[int64][]store.AppInstallation{}
+	for _, in := range all {
+		groups[in.NodeID] = append(groups[in.NodeID], in)
+	}
+	out := map[int64]map[string]string{}
+	for nodeID, list := range groups {
+		n, err := m.store.GetNode(nodeID)
+		if err != nil || !summaryOnline(n, now) {
+			continue
+		}
+		states := map[string]string{}
+		m.summarizeNode(ctx, n, list, &InstallSummary{}, states)
+		if len(states) > 0 {
+			out[nodeID] = states
+		}
+	}
+	return out
+}
+
 func (m *Manager) summarizeNode(ctx context.Context, n *store.Node,
-	list []store.AppInstallation, sum *InstallSummary) {
+	list []store.AppInstallation, sum *InstallSummary, states map[string]string) {
+	// setState 记录单应用状态（states 为 nil 时跳过）
+	setState := func(appID, st string) {
+		if states != nil {
+			states[appID] = st
+		}
+	}
 	rctx, cancel := context.WithTimeout(ctx, 8*time.Second)
 	defer cancel()
 
 	// ---- native：一次 systemctl is-active 批量探测 ----
 	var units []string
+	var unitApps []string
 	for _, in := range list {
 		if in.Method == "docker" {
 			continue
@@ -83,6 +117,7 @@ func (m *Manager) summarizeNode(ctx context.Context, n *store.Node,
 			}
 		}
 		units = append(units, unit)
+		unitApps = append(unitApps, in.AppID)
 	}
 	if len(units) > 0 {
 		if ex, err := m.ExecutorFor(n); err == nil {
@@ -98,10 +133,13 @@ func (m *Manager) summarizeNode(ctx context.Context, n *store.Node,
 					switch state {
 					case "active":
 						sum.Running++
+						setState(unitApps[i], "running")
 					case "failed":
 						sum.Error++
+						setState(unitApps[i], "error")
 					default:
 						sum.Stopped++
+						setState(unitApps[i], "stopped")
 					}
 				}
 			}
@@ -130,10 +168,10 @@ func (m *Manager) summarizeNode(ctx context.Context, n *store.Node,
 	defer resp.Body.Close()
 	var items []containerListItem
 	if resp.StatusCode == 200 && decodeJSONReader(resp, &items) == nil {
-		states := map[string]string{}
+		cstates := map[string]string{}
 		for _, it := range items {
 			for _, nm := range it.Names {
-				states[nm] = it.State
+				cstates[nm] = it.State
 			}
 		}
 		for _, in := range dlist {
@@ -141,13 +179,16 @@ func (m *Manager) summarizeNode(ctx context.Context, n *store.Node,
 			if cname == "" {
 				cname = containerName(in.AppID)
 			}
-			switch states["/"+cname] {
+			switch cstates["/"+cname] {
 			case "running":
 				sum.Running++
+				setState(in.AppID, "running")
 			case "exited", "dead", "":
 				sum.Error++
+				setState(in.AppID, "error")
 			default:
 				sum.Stopped++
+				setState(in.AppID, "stopped")
 			}
 		}
 	}

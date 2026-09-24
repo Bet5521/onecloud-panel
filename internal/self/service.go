@@ -146,6 +146,12 @@ func (s *Service) FinalizeBoot() (int, error) {
 	return n, nil
 }
 
+// EnsureRestartable 预检当前环境是否支持自动重启（systemd 托管且服务 active）。
+// 在线更新替换二进制前调用，避免更新成功却无法自动重启的坏状态。
+func (s *Service) EnsureRestartable(ctx context.Context) error {
+	return s.checkSystemd(ctx)
+}
+
 func (s *Service) checkSystemd(ctx context.Context) error {
 	r, err := s.ex.Exec(ctx, "systemctl", "is-active", s.unitName)
 	if err != nil {

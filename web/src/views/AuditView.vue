@@ -21,6 +21,10 @@
             <el-option label="失败" value="failure" />
           </el-select>
         </el-form-item>
+        <el-form-item label="动作">
+          <el-input v-model="filter.action" placeholder="如 login / install" clearable style="width: 150px"
+            @keyup.enter="onSearch" @clear="onSearch" />
+        </el-form-item>
         <el-form-item label="时间">
           <el-date-picker v-model="dateRange" type="datetimerange" range-separator="至"
             start-placeholder="开始" end-placeholder="结束" value-format="X" style="width: 340px" />
@@ -28,6 +32,7 @@
         <el-form-item>
           <el-button type="primary" :icon="Search" @click="onSearch">查询</el-button>
           <el-button :icon="RefreshLeft" @click="onReset">重置</el-button>
+          <el-button :icon="Download" @click="onExport">导出 CSV</el-button>
         </el-form-item>
       </el-form>
     </el-card>
@@ -79,7 +84,7 @@
 
 <script setup>
 import { ref, onMounted } from 'vue'
-import { Search, RefreshLeft } from '@element-plus/icons-vue'
+import { Search, RefreshLeft, Download } from '@element-plus/icons-vue'
 import { get, showErr } from '../api/http'
 import { fmtTime } from '../utils'
 
@@ -89,32 +94,42 @@ const moduleOptions = [
   { value: 'app', label: '应用' },
   { value: 'user', label: '用户' },
   { value: 'role', label: '角色' },
-  { value: 'settings', label: '设置' }
+  { value: 'settings', label: '设置' },
+  { value: 'audit', label: '审计' },
+  { value: 'system', label: '系统' }
 ]
 const moduleLabel = (m) => moduleOptions.find((x) => x.value === m)?.label || m
 
-const filter = ref({ username: '', module: '', result: '' })
-const dateRange = ref(null)
+const filter = ref({ username: '', module: '', result: '', action: '' })
+const dateRange = ref([])
 const logs = ref([])
 const total = ref(0)
 const page = ref(1)
 const pageSize = ref(20)
 const loading = ref(false)
 
+// buildQuery 汇总筛选条件（查询与导出共用，导出不分页）。
+function buildQuery(withPage) {
+  const params = new URLSearchParams()
+  if (filter.value.username) params.set('username', filter.value.username)
+  if (filter.value.module) params.set('module', filter.value.module)
+  if (filter.value.result) params.set('result', filter.value.result)
+  if (filter.value.action) params.set('action', filter.value.action)
+  if (Array.isArray(dateRange.value) && dateRange.value.length === 2) {
+    params.set('start', dateRange.value[0])
+    params.set('end', dateRange.value[1])
+  }
+  if (withPage) {
+    params.set('page', String(page.value))
+    params.set('page_size', String(pageSize.value))
+  }
+  return params.toString()
+}
+
 async function load() {
   loading.value = true
   try {
-    const params = new URLSearchParams()
-    if (filter.value.username) params.set('username', filter.value.username)
-    if (filter.value.module) params.set('module', filter.value.module)
-    if (filter.value.result) params.set('result', filter.value.result)
-    if (Array.isArray(dateRange.value) && dateRange.value.length === 2) {
-      params.set('start', dateRange.value[0])
-      params.set('end', dateRange.value[1])
-    }
-    params.set('page', String(page.value))
-    params.set('page_size', String(pageSize.value))
-    const d = await get(`/api/audit-logs?${params.toString()}`)
+    const d = await get(`/api/audit-logs?${buildQuery(true)}`)
     logs.value = Array.isArray(d.items) ? d.items : []
     total.value = d.total || 0
   } catch (e) {
@@ -124,13 +139,23 @@ async function load() {
   }
 }
 
+// onExport 按当前筛选条件导出 CSV（鉴权走会话 Cookie，直接触发浏览器下载）。
+function onExport() {
+  const a = document.createElement('a')
+  a.href = `/api/audit-logs/export?${buildQuery(false)}`
+  a.rel = 'noopener'
+  document.body.appendChild(a)
+  a.click()
+  document.body.removeChild(a)
+}
+
 function onSearch() {
   page.value = 1
   load()
 }
 function onReset() {
-  filter.value = { username: '', module: '', result: '' }
-  dateRange.value = null
+  filter.value = { username: '', module: '', result: '', action: '' }
+  dateRange.value = []
   page.value = 1
   load()
 }

@@ -18,8 +18,9 @@ const DefaultTTL = 12 * time.Hour
 
 // Manager 会话管理。
 type Manager struct {
-	store *store.Store
-	ttl   time.Duration
+	store  *store.Store
+	ttl    time.Duration
+	secure bool // 启用 HTTPS 时置位，Cookie 带 Secure 属性
 }
 
 // NewManager 创建会话管理器。
@@ -29,6 +30,9 @@ func NewManager(s *store.Store, ttl time.Duration) *Manager {
 	}
 	return &Manager{store: s, ttl: ttl}
 }
+
+// SetSecure 设置会话 Cookie 的 Secure 属性（面板启用 HTTPS 后应置位）。
+func (m *Manager) SetSecure(v bool) { m.secure = v }
 
 // Issue 生成令牌、落库并写入 Cookie。
 func (m *Manager) Issue(w http.ResponseWriter, userID int64, ip, ua string) error {
@@ -44,6 +48,7 @@ func (m *Manager) Issue(w http.ResponseWriter, userID int64, ip, ua string) erro
 		Value:    token,
 		Path:     "/",
 		HttpOnly: true,
+		Secure:   m.secure,
 		SameSite: http.SameSiteStrictMode,
 		Expires:  time.Now().Add(m.ttl),
 	})
@@ -90,15 +95,66 @@ func (m *Manager) Revoke(r *http.Request) error {
 }
 
 // ClearCookie 清除浏览器会话 Cookie。
-func ClearCookie(w http.ResponseWriter) {
+func (m *Manager) ClearCookie(w http.ResponseWriter) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     CookieName,
 		Value:    "",
 		Path:     "/",
 		HttpOnly: true,
+		Secure:   m.secure,
 		SameSite: http.SameSiteStrictMode,
 		MaxAge:   -1,
 	})
+}
+
+// SIDOf 由会话哈希导出对外可见的会话标识（哈希前缀）。
+// 只暴露 SHA-256 前缀，无法反推令牌，可用于列表展示与定向注销。
+func SIDOf(tokenHash string) string {
+	if len(tokenHash) <= 16 {
+		return tokenHash
+	}
+	return tokenHash[:16]
+}
+
+// CurrentSID 返回请求所携带会话的对外标识；无有效会话返回空串。
+func (m *Manager) CurrentSID(r *http.Request) string {
+	c, err := r.Cookie(CookieName)
+	if err != nil || c.Value == "" {
+		return ""
+	}
+	return SIDOf(hashToken(c.Value))
+}
+
+// ListSessions 列出用户全部有效会话。
+func (m *Manager) ListSessions(userID int64) ([]store.SessionInfo, error) {
+	return m.store.ListUserSessions(userID)
+}
+
+// RevokeSession 定向注销用户自己的某个会话，返回是否命中。
+func (m *Manager) RevokeSession(userID int64, sid string) (bool, error) {
+	n, err := m.store.DeleteUserSessionByID(userID, sid)
+	if err != nil {
+		return false, err
+	}
+	return n > 0, nil
+}
+
+// RevokeOtherSessions 注销该用户除 keepSID 外的全部会话，返回注销数量。
+func (m *Manager) RevokeOtherSessions(userID int64, keepSID string) (int, error) {
+	sessions, err := m.store.ListUserSessions(userID)
+	if err != nil {
+		return 0, err
+	}
+	removed := 0
+	for _, s := range sessions {
+		if s.ID == keepSID {
+			continue
+		}
+		if n, err := m.store.DeleteUserSessionByID(userID, s.ID); err == nil && n > 0 {
+			removed += int(n)
+		}
+	}
+	return removed, nil
 }
 
 func newToken() (string, string, error) {

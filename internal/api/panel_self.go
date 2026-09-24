@@ -3,6 +3,7 @@ package api
 import (
 	"net/http"
 	"strconv"
+	"strings"
 
 	"onecloud-panel/internal/audit"
 	"onecloud-panel/internal/auth"
@@ -45,7 +46,22 @@ func (a *API) panelJournal(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, map[string]string{"journal": out})
+	writeJSON(w, map[string]string{"journal": filterResetCodeLines(out)})
+}
+
+// filterResetCodeLines 过滤服务日志中的密码重置码行（防御纵深）：
+// 验证码仅允许通过服务器本地日志（journalctl）获取，不经过面板 API 视图。
+func filterResetCodeLines(j string) string {
+	if !strings.Contains(j, "重置码：") {
+		return j
+	}
+	lines := strings.Split(j, "\n")
+	for i, ln := range lines {
+		if strings.Contains(ln, "[密码重置]") && strings.Contains(ln, "重置码：") {
+			lines[i] = "[已过滤] 该行为密码重置码日志，请通过服务器本地日志查看"
+		}
+	}
+	return strings.Join(lines, "\n")
 }
 
 // POST /api/panel/restart — 异步重启面板。

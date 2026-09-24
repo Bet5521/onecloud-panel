@@ -55,3 +55,46 @@ func (s *Store) CleanExpiredSessions() (int64, error) {
 	}
 	return res.RowsAffected()
 }
+
+// SessionInfo 会话列表视图（不含令牌与哈希，仅可公开的会话标识与环境信息）。
+type SessionInfo struct {
+	ID        string `json:"id"`
+	IP        string `json:"ip"`
+	UserAgent string `json:"user_agent"`
+	CreatedAt int64  `json:"created_at"`
+	LastSeen  int64  `json:"last_seen"`
+	ExpiresAt int64  `json:"expires_at"`
+}
+
+// ListUserSessions 列出某用户未过期的会话（按最近活跃倒序）。
+func (s *Store) ListUserSessions(userID int64) ([]SessionInfo, error) {
+	rows, err := s.DB.Query(
+		`SELECT substr(token_hash, 1, 16), ip, user_agent, created_at, last_seen, expires_at
+		 FROM sessions WHERE user_id = ? AND expires_at >= ? ORDER BY last_seen DESC`,
+		userID, now())
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []SessionInfo
+	for rows.Next() {
+		var it SessionInfo
+		if err := rows.Scan(&it.ID, &it.IP, &it.UserAgent,
+			&it.CreatedAt, &it.LastSeen, &it.ExpiresAt); err != nil {
+			return nil, err
+		}
+		out = append(out, it)
+	}
+	return out, rows.Err()
+}
+
+// DeleteUserSessionByID 注销某用户指定会话（sid 为会话哈希前缀，避免越权注销他人会话）。
+func (s *Store) DeleteUserSessionByID(userID int64, sid string) (int64, error) {
+	res, err := s.DB.Exec(
+		`DELETE FROM sessions WHERE user_id = ? AND substr(token_hash, 1, 16) = ?`,
+		userID, sid)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}

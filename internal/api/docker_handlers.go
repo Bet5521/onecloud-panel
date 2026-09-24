@@ -24,6 +24,9 @@ func (a *API) dockerStatus(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, err.Error())
 		return
 	}
+	if !assertNodeOwner(w, r, n) {
+		return
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), 8*time.Second)
 	defer cancel()
 	ok, ver, _ := a.apps.DockerStatus(ctx, n)
@@ -46,8 +49,12 @@ func (a *API) installDocker(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if _, err := a.nodes.Get(id); err != nil {
-		writeError(w, http.StatusNotFound, err.Error())
+	n, gerr := a.nodes.Get(id)
+	if gerr != nil {
+		writeError(w, http.StatusNotFound, gerr.Error())
+		return
+	}
+	if !assertNodeOwner(w, r, n) {
 		return
 	}
 	payload, _ := json.Marshal(apps.DockerTaskPayload{NodeID: id})
@@ -70,8 +77,12 @@ func (a *API) updateNodeDockerConfig(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if _, err := a.nodes.Get(id); err != nil {
-		writeError(w, http.StatusNotFound, err.Error())
+	n, gerr := a.nodes.Get(id)
+	if gerr != nil {
+		writeError(w, http.StatusNotFound, gerr.Error())
+		return
+	}
+	if !assertNodeOwner(w, r, n) {
 		return
 	}
 	var req struct {
@@ -101,6 +112,9 @@ func (a *API) applyNodeDockerConfig(w http.ResponseWriter, r *http.Request) {
 	n, err := a.nodes.Get(id)
 	if err != nil {
 		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	if !assertNodeOwner(w, r, n) {
 		return
 	}
 	if n.DockerVersion == "" {

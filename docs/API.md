@@ -211,6 +211,31 @@ PUT /api/roles/3
 {"permissions":["dashboard:read","node:read","app:read","auditlog:read"]}
 ```
 
+### 6.1 登录设备与会话管理
+
+任何登录用户可管理**自己的**会话（他人会话不可见、不可操作）。
+会话标识 `id` 为令牌哈希前缀，无法反推令牌，仅用于展示与定向注销。
+
+```bash
+GET /api/auth/sessions
+→ {"items":[{"id":"3f9c…","ip":"192.168.1.10","user_agent":"Mozilla/5.0 …",
+             "created_at":1727000000,"last_seen":1727003600,"expires_at":1727046800,
+             "current":true}],"total":1}
+
+DELETE /api/auth/sessions/{id}
+→ 200 {"status":"ok"}
+# 注销的是当前会话时同步清除 Cookie；不存在/已过期 → 404
+
+POST /api/auth/sessions/revoke-others
+→ 200 {"status":"ok","revoked":2}
+# 注销除当前登录外的全部会话
+
+POST /api/auth/change-password
+{"old_password":"…","new_password":"…"}
+→ 200 {"status":"ok","revoked_sessions":2}
+# 改密后自动注销其他设备会话（保留当前登录）并返回注销数量
+```
+
 ## 七、设置与面板自管理
 
 读需要 `settings:read`；写需要 `settings:write`。
@@ -225,6 +250,7 @@ PUT /api/roles/3
 | GET | `/api/panel/status` | 运行状态（systemd/监听/时长/路径） |
 | GET | `/api/panel/journal` | 面板日志（`?lines=200`） |
 | POST | `/api/panel/restart` | 异步重启面板 |
+| GET | `/api/panel/backup` | 下载数据备份 tar.gz（`?include_secrets=1` 才含 secret.key） |
 
 ```bash
 PUT /api/settings
@@ -317,9 +343,16 @@ POST /api/notifications/channels
 需要 `auditlog:read`。
 
 ```bash
-GET /api/audit-logs?limit=50&module=auth&result=success
+GET /api/audit-logs?username=admin&module=auth&action=login&result=success&start=…&end=…&page=1&page_size=20
 → {"items":[{ "id":1,"username":"admin","ip":"...","module":"auth",
-              "action":"login","result":"success","request_id":"...","detail":{}}]}
+              "action":"login","result":"success","request_id":"...","detail":{}}],
+   "total":1}
+# 支持筛选：username / module / action / result / start / end（unix 秒）；分页 page / page_size（上限 500）
+
+GET /api/audit-logs/export?action=login
+→ 200 text/csv（附件下载）
+# 按同一套筛选条件导出 CSV，分页流式写出，单次上限 10 万行（超出在文件尾注明）
+# 导出行为本身会记入审计（module=audit, action=export_csv）
 ```
 
 ## 九、调用示例（curl 完整会话）

@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strconv"
 	"time"
@@ -10,6 +11,7 @@ import (
 	"onecloud-panel/internal/audit"
 	"onecloud-panel/internal/auth"
 	"onecloud-panel/internal/node"
+	"onecloud-panel/internal/notify"
 	"onecloud-panel/internal/store"
 )
 
@@ -200,6 +202,8 @@ func (a *API) manualAddNode(w http.ResponseWriter, r *http.Request) {
 	}
 	a.audit.Record(r, "node", "create", "node", strconv.FormatInt(id, 10), audit.ResultSuccess,
 		audit.DetailJSON(map[string]any{"name": req.Name, "network_type": req.NetworkType}))
+	a.EmitEvent(notify.EventNodeChange, "节点已添加",
+		fmt.Sprintf("节点「%s」已加入集群。", req.Name))
 	n, _ := a.nodes.Get(id)
 	writeJSON(w, toDTO(n))
 }
@@ -223,6 +227,15 @@ func (a *API) updateNode(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "请求格式错误")
 		return
 	}
+	// 属主断言：非管理员仅可编辑自己添加的节点（404 掩蔽）
+	own, gerr := a.nodes.Get(id)
+	if gerr != nil {
+		writeError(w, http.StatusNotFound, gerr.Error())
+		return
+	}
+	if !assertNodeOwner(w, r, own) {
+		return
+	}
 	n, err := a.nodes.Confirm(id, req.Name, req.NetworkType, req.Address, req.AltAddress)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -237,6 +250,8 @@ func (a *API) updateNode(w http.ResponseWriter, r *http.Request) {
 	}
 	a.audit.Record(r, "node", "update", "node", strconv.FormatInt(id, 10), audit.ResultSuccess,
 		audit.DetailJSON(map[string]any{"name": n.Name, "network_type": n.NetworkType}))
+	a.EmitEvent(notify.EventNodeChange, "节点已更新",
+		fmt.Sprintf("节点「%s」信息已更新。", n.Name))
 	writeJSON(w, toDTO(n))
 }
 
@@ -246,11 +261,22 @@ func (a *API) deleteNode(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	n, gerr := a.nodes.Get(id)
+	if gerr != nil {
+		writeError(w, http.StatusNotFound, gerr.Error())
+		return
+	}
+	if !assertNodeOwner(w, r, n) {
+		return
+	}
+	nodeName := n.Name
 	if err := a.nodes.Remove(id); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	a.audit.Record(r, "node", "delete", "node", strconv.FormatInt(id, 10), audit.ResultSuccess, "")
+	a.EmitEvent(notify.EventNodeChange, "节点已移除",
+		fmt.Sprintf("节点「%s」已从集群移除。", nodeName))
 	writeJSON(w, map[string]string{"status": "ok"})
 }
 
@@ -346,6 +372,14 @@ func (a *API) rotateNodeToken(w http.ResponseWriter, r *http.Request) {
 	id, err := idFromPath(r)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	n, gerr := a.nodes.Get(id)
+	if gerr != nil {
+		writeError(w, http.StatusNotFound, gerr.Error())
+		return
+	}
+	if !assertNodeOwner(w, r, n) {
 		return
 	}
 	newTok, err := a.nodes.RotateToken(id)

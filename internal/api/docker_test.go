@@ -33,11 +33,11 @@ func TestDockerAPI(t *testing.T) {
 		t.Fatalf("docker_install 任务异常: %+v", tasks)
 	}
 
-	// viewer：状态可读，安装 403
+	// viewer：非属主访问他人节点 → 404 掩蔽；安装无 node:write → 403
 	viewer := makeViewer(t, h, s, "vdocker")
 	w = do(t, h, "GET", "/api/nodes/"+itoa(localID)+"/docker/status", nil, viewer)
-	if w.Code != http.StatusOK {
-		t.Fatalf("viewer status code=%d", w.Code)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("viewer status code=%d, want 404 (非属主掩蔽)", w.Code)
 	}
 	w = do(t, h, "POST", "/api/nodes/"+itoa(localID)+"/docker/install", nil, viewer)
 	if w.Code != http.StatusForbidden {

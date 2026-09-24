@@ -48,7 +48,9 @@ export async function request(method, url, body) {
   }
   if (!resp.ok) {
     const msg = data && data.error ? data.error : `请求失败（${resp.status}）`
-    throw new ApiError(msg, resp.status)
+    const err = new ApiError(msg, resp.status)
+    if (data && data.code) err.code = data.code
+    throw err
   }
   return data
 }

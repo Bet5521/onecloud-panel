@@ -232,6 +232,10 @@
             </el-form-item>
             <el-form-item label="Agent 地址">
               <el-input v-model="manual.address" placeholder="host:port，如 192.168.1.20:8080" />
+              <div class="muted" style="font-size:12px;line-height:1.6;margin-top:4px">
+                公网地址默认要求 https：Token 经 Bearer 头传输，公网明文 http 可被窃听。
+                如确无 TLS 条件，请显式填写 http:// 前缀（自担风险），或为 Agent 配置 TLS 反向代理。
+              </div>
             </el-form-item>
             <el-form-item label="Agent Token">
               <el-input v-model="manual.token" placeholder="目标节点 Agent 的访问 Token" />

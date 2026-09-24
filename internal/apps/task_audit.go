@@ -2,9 +2,11 @@ package apps
 
 import (
 	"encoding/json"
+	"fmt"
 	"strconv"
 
 	"onecloud-panel/internal/audit"
+	"onecloud-panel/internal/notify"
 	"onecloud-panel/internal/store"
 )
 
@@ -33,6 +35,10 @@ func (m *Manager) taskAudit(t *store.BackgroundTask, status string) {
 		})
 		m.audit.RecordTask(t.CreatedBy, "app", action, "installation",
 			target, result, detail)
+		// 安装/卸载成功终态 → 应用变动事件通知
+		if result == audit.ResultSuccess {
+			m.emitAppChange(t.Type, p)
+		}
 	case "docker_install":
 		var p DockerTaskPayload
 		if err := json.Unmarshal([]byte(t.Payload), &p); err != nil || p.NodeID == 0 {
@@ -47,5 +53,27 @@ func (m *Manager) taskAudit(t *store.BackgroundTask, status string) {
 		}
 		m.audit.RecordTask(t.CreatedBy, "app", "docker_apply_config", "node",
 			strconv.FormatInt(p.NodeID, 10), result, "")
+	}
+}
+
+// emitAppChange 安装/卸载成功后发出应用变动事件（NotifyEvent 未注入时跳过）。
+func (m *Manager) emitAppChange(taskType string, p TaskPayload) {
+	if m.NotifyEvent == nil {
+		return
+	}
+	appName := p.AppID
+	if rp, ok := m.recipes.Get(p.AppID); ok && rp.Name != "" {
+		appName = rp.Name
+	}
+	nodeName := strconv.FormatInt(p.NodeID, 10)
+	if n, err := m.store.GetNode(p.NodeID); err == nil && n.Name != "" {
+		nodeName = n.Name
+	}
+	if taskType == "app_install" {
+		m.NotifyEvent(notify.EventAppChange, "应用安装成功",
+			fmt.Sprintf("应用「%s」已在节点「%s」上安装成功（%s）。", appName, nodeName, p.Method))
+	} else {
+		m.NotifyEvent(notify.EventAppChange, "应用卸载成功",
+			fmt.Sprintf("应用「%s」已从节点「%s」卸载。", appName, nodeName))
 	}
 }

@@ -85,20 +85,21 @@ func (s *Service) DeleteToken(id int64) error { return s.store.DeleteRegistratio
 // Register 处理 Agent 首次注册；remoteAddr 为发起注册的 TCP 来源。
 // 返回节点 ID 与节点长期 Token 明文。
 func (s *Service) Register(req *agent.RegisterRequest, remoteAddr string) (int64, string, error) {
-	tok, err := s.store.GetRegistrationTokenByHash(hash(req.RegisterToken))
+	tokenHash := hash(req.RegisterToken)
+	// 原子领取使用额度：先查后用会因并发注册超额（一次性令牌被用多次）
+	if err := s.store.ClaimRegistrationToken(tokenHash, time.Now().Unix()); err != nil {
+		return 0, "", err
+	}
+	tok, err := s.store.GetRegistrationTokenByHash(tokenHash)
 	if err != nil {
+		_ = s.store.ReleaseRegistrationToken(tokenHash)
 		return 0, "", errors.New("注册令牌无效")
 	}
 	now := time.Now().Unix()
-	if tok.ExpiresAt != nil && *tok.ExpiresAt < now {
-		return 0, "", errors.New("注册令牌已过期")
-	}
-	if tok.UsedCount >= tok.MaxUses {
-		return 0, "", errors.New("注册令牌已使用")
-	}
 
 	nodeToken, err := randomToken()
 	if err != nil {
+		_ = s.store.ReleaseRegistrationToken(tokenHash)
 		return 0, "", err
 	}
 
@@ -137,9 +138,7 @@ func (s *Service) Register(req *agent.RegisterRequest, remoteAddr string) (int64
 
 	id, err := s.store.CreateNode(n)
 	if err != nil {
-		return 0, "", err
-	}
-	if err := s.store.IncrementTokenUse(tok.ID); err != nil {
+		_ = s.store.ReleaseRegistrationToken(tokenHash)
 		return 0, "", err
 	}
 	if err := s.saveEncryptedToken(id, nodeToken); err != nil {

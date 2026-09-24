@@ -16,21 +16,22 @@ import (
 
 // API 面板 HTTP API 组合根；后续任务在此装配更多模块。
 type API struct {
-	store      *store.Store
-	mw         *auth.Middleware
-	authH      *auth.Handler
-	audit      *audit.Service
-	nodes      *node.Service
-	recipes    *recipes.Registry
-	tasks      *runner.Runner
-	apps       *apps.Manager
-	selfSvc    *self.Service
-	sessions   *auth.Manager
-	releaseDir string
-	dataDir    string
-	listenAddr string
-	resetLimit *auth.LoginLimiter
-	codeSink   func(username, code string) // 测试注入：捕获重置码
+	store        *store.Store
+	mw           *auth.Middleware
+	authH        *auth.Handler
+	audit        *audit.Service
+	nodes        *node.Service
+	recipes      *recipes.Registry
+	tasks        *runner.Runner
+	apps         *apps.Manager
+	selfSvc      *self.Service
+	sessions     *auth.Manager
+	releaseDir   string
+	dataDir      string
+	listenAddr   string
+	resetLimit   *auth.LoginLimiter
+	confirmLimit *auth.LoginLimiter          // 重置码确认接口防爆破
+	codeSink     func(username, code string) // 测试注入：捕获重置码
 }
 
 // SetDataDir 注入面板数据目录（TLS 证书文件落盘用）。
@@ -81,6 +82,7 @@ func (a *API) Handler() http.Handler {
 	mux.HandleFunc("GET /api/system/status", a.systemStatus)
 	mux.HandleFunc("POST /api/setup", a.setup)
 	mux.HandleFunc("POST /api/auth/login", a.authH.Login)
+	mux.HandleFunc("GET /api/auth/captcha", a.authH.Captcha)
 	mux.HandleFunc("POST /api/auth/password-reset/request", a.resetRequest)
 	mux.HandleFunc("POST /api/auth/password-reset/confirm", a.resetConfirm)
 	mux.HandleFunc("GET /api/version", func(w http.ResponseWriter, r *http.Request) {
@@ -136,6 +138,11 @@ func (a *API) Handler() http.Handler {
 	// ---- 需要登录 ----
 	mux.Handle("POST /api/auth/logout", a.mw.RequireAuth(http.HandlerFunc(a.authH.Logout)))
 	mux.Handle("GET /api/auth/me", a.mw.RequireAuth(http.HandlerFunc(a.authH.Me)))
+	// 本人通知事件订阅（任何登录用户）
+	mux.Handle("GET /api/auth/my-notify-events", a.mw.RequireAuth(
+		http.HandlerFunc(a.getMyNotifyEvents)))
+	mux.Handle("PUT /api/auth/notify-events", a.mw.RequireAuth(
+		http.HandlerFunc(a.updateMyNotifyEvents)))
 
 	mux.Handle("GET /api/panel/info", a.mw.RequireAuth(
 		auth.RequirePermission(store.PermSettingsRead, a.panelInfo)))
@@ -145,6 +152,10 @@ func (a *API) Handler() http.Handler {
 		auth.RequirePermission(store.PermSettingsRead, http.HandlerFunc(a.panelJournal))))
 	mux.Handle("POST /api/panel/restart", a.mw.RequireAuth(
 		auth.RequirePermission(store.PermSettingsWrite, http.HandlerFunc(a.panelRestart))))
+	mux.Handle("GET /api/update/check", a.mw.RequireAuth(
+		auth.RequirePermission(store.PermSettingsRead, http.HandlerFunc(a.updateCheck))))
+	mux.Handle("POST /api/update/apply", a.mw.RequireAuth(
+		auth.RequirePermission(store.PermSettingsWrite, http.HandlerFunc(a.updateApply))))
 	mux.Handle("GET /api/settings", a.mw.RequireAuth(
 		auth.RequirePermission(store.PermSettingsRead, a.getSettings)))
 	mux.Handle("PUT /api/settings", a.mw.RequireAuth(
@@ -153,6 +164,8 @@ func (a *API) Handler() http.Handler {
 		auth.RequirePermission(store.PermSettingsWrite, http.HandlerFunc(a.updateTLSSettings))))
 	mux.Handle("POST /api/settings/smtp-test", a.mw.RequireAuth(
 		auth.RequirePermission(store.PermSettingsWrite, http.HandlerFunc(a.testSMTP))))
+	mux.Handle("GET /api/panel/backup", a.mw.RequireAuth(
+		auth.RequirePermission(store.PermSettingsWrite, http.HandlerFunc(a.downloadBackup))))
 
 	// ---- 通知管理 ----
 	mux.Handle("GET /api/notifications/channels", a.mw.RequireAuth(
@@ -165,9 +178,16 @@ func (a *API) Handler() http.Handler {
 		auth.RequirePermission(store.PermSettingsWrite, http.HandlerFunc(a.testNotificationChannel))))
 	mux.Handle("DELETE /api/notifications/channels/{id}", a.mw.RequireAuth(
 		auth.RequirePermission(store.PermSettingsWrite, http.HandlerFunc(a.deleteNotificationChannel))))
+	// 定时状态摘要设置
+	mux.Handle("GET /api/settings/notifications/schedule", a.mw.RequireAuth(
+		auth.RequirePermission(store.PermSettingsRead, http.HandlerFunc(a.getNotificationSchedule))))
+	mux.Handle("PUT /api/settings/notifications/schedule", a.mw.RequireAuth(
+		auth.RequirePermission(store.PermSettingsWrite, http.HandlerFunc(a.updateNotificationSchedule))))
 
 	mux.Handle("GET /api/audit-logs", a.mw.RequireAuth(
 		auth.RequirePermission(store.PermAuditRead, audit.NewHandler(a.audit).List)))
+	mux.Handle("GET /api/audit-logs/export", a.mw.RequireAuth(
+		auth.RequirePermission(store.PermAuditRead, audit.NewHandler(a.audit).ExportCSV)))
 
 	// ---- 仪表盘 ----
 	mux.Handle("GET /api/dashboard/summary", a.mw.RequireAuth(
@@ -192,6 +212,13 @@ func (a *API) Handler() http.Handler {
 		http.HandlerFunc(a.listMyNotifyChannels)))
 	mux.Handle("POST /api/auth/change-password", a.mw.RequireAuth(
 		http.HandlerFunc(a.changePassword)))
+	// 登录设备/会话管理
+	mux.Handle("GET /api/auth/sessions", a.mw.RequireAuth(
+		http.HandlerFunc(a.listMySessions)))
+	mux.Handle("POST /api/auth/sessions/revoke-others", a.mw.RequireAuth(
+		http.HandlerFunc(a.revokeOtherSessions)))
+	mux.Handle("DELETE /api/auth/sessions/{id}", a.mw.RequireAuth(
+		http.HandlerFunc(a.revokeMySession)))
 
 	// ---- 角色管理 ----
 	mux.Handle("GET /api/roles", a.mw.RequireAuth(
@@ -243,5 +270,6 @@ func (a *API) Handler() http.Handler {
 	mux.Handle("GET /api/tasks/{id}", a.mw.RequireAuth(
 		auth.RequirePermission(store.PermAppRead, http.HandlerFunc(a.getTask))))
 
-	return audit.RequestIDMiddleware(mux)
+	// 安全收口：请求体限额 → 安全响应头 → CSRF 同站校验 → 请求 ID（审计链路）
+	return SecurityChain(audit.RequestIDMiddleware(mux))
 }

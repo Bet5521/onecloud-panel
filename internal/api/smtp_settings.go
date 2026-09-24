@@ -28,9 +28,25 @@ func (a *API) smtpConfig() mailer.Config {
 		Host:     g(settingSMTPHost),
 		Port:     g(settingSMTPPort),
 		Username: g(settingSMTPUser),
-		Password: g(settingSMTPPass),
+		Password: a.smtpPassword(),
 		From:     g(settingSMTPFrom),
 	}
+}
+
+// smtpPassword 读取并解密 SMTP 密码；历史明文惰性升级为加密存储。
+func (a *API) smtpPassword() string {
+	v, _, _ := a.store.GetSetting(settingSMTPPass)
+	if v == "" {
+		return ""
+	}
+	if p, err := a.nodes.OpenSecret(v); err == nil {
+		return p
+	}
+	// 兼容历史明文：本次按原值使用，并升级为加密存储
+	if enc, err := a.nodes.SealSecret(v); err == nil {
+		_ = a.store.SetSetting(settingSMTPPass, enc)
+	}
+	return v
 }
 
 // smtpRecipient 确定密码重置邮件的收件人：

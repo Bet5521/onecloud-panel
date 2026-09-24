@@ -29,24 +29,59 @@ func (a *API) smsPlatformReady() bool {
 	return err == nil
 }
 
-// deliverByEmail 向用户绑定邮箱发送重置码；未绑定则回退 SMTP 收件人设置。
-func (a *API) deliverByEmail(u *store.User, code string) (string, error) {
+// sendUserEmail 通过平台 SMTP 向用户发送邮件（收件人优先用户绑定邮箱，回退 SMTP 收件人设置）。
+func (a *API) sendUserEmail(u *store.User, title, body string) error {
 	mc := a.smtpConfig()
 	if !mc.Enabled() {
-		return "", errors.New("SMTP 未配置")
+		return errors.New("SMTP 未配置")
 	}
 	to := strings.TrimSpace(u.NotifyEmail)
 	if to == "" {
 		to = a.smtpRecipient(u, mc)
 	}
+	if to == "" {
+		return errors.New("用户未绑定邮箱")
+	}
+	return mailer.Send(mc, to, title, body)
+}
+
+// deliverByEmail 向用户绑定邮箱发送重置码；未绑定则回退 SMTP 收件人设置。
+func (a *API) deliverByEmail(u *store.User, code string) (string, error) {
 	body := "您正在重置 OneCloud Panel 登录密码。\n\n" +
 		"重置码：" + code + "\n" +
 		"有效期：15 分钟\n\n" +
 		"如非本人操作，请忽略本邮件并检查面板安全。"
-	if err := mailer.Send(mc, to, "OneCloud Panel 密码重置码", body); err != nil {
+	to := strings.TrimSpace(u.NotifyEmail)
+	if to == "" {
+		to = a.smtpRecipient(u, a.smtpConfig())
+	}
+	if err := a.sendUserEmail(u, "OneCloud Panel 密码重置码", body); err != nil {
 		return "", err
 	}
 	return "已发送至邮箱 " + maskEmail(to), nil
+}
+
+// sendUserSMS 通过短信平台向用户发送短信（号码优先 NotifyTarget，回退旧手机号字段）。
+func (a *API) sendUserSMS(u *store.User, title, body string) error {
+	phone := derefStr(u.NotifyTarget)
+	if phone == "" {
+		phone = strings.TrimSpace(u.NotifySMSPhone)
+	}
+	if phone == "" {
+		return errors.New("用户未绑定手机号")
+	}
+	if !a.smsPlatformReady() {
+		return errors.New("短信平台未配置")
+	}
+	c, err := a.smsChannelFor(u)
+	if err != nil {
+		return err
+	}
+	sender, err := notify.Build(c.Type, parseConfig(c.ConfigJSON))
+	if err != nil {
+		return err
+	}
+	return sender.Send(notify.Message{Title: title, Body: body, To: phone})
 }
 
 // deliverBySMS 向用户绑定手机号发送短信重置码；短信平台未配置时拒绝发送。
@@ -56,27 +91,8 @@ func (a *API) deliverBySMS(u *store.User, code string) (string, error) {
 	if phone == "" {
 		phone = strings.TrimSpace(u.NotifySMSPhone)
 	}
-	if phone == "" {
-		return "", errors.New("用户未绑定手机号")
-	}
-	if !a.smsPlatformReady() {
-		return "", errors.New("短信平台未配置")
-	}
-	c, err := a.smsChannelFor(u)
-	if err != nil {
-		return "", err
-	}
-	sender, err := notify.Build(c.Type, parseConfig(c.ConfigJSON))
-	if err != nil {
-		return "", err
-	}
-	msg := notify.Message{
-		Title: "OneCloud Panel 密码重置码",
-		Body:  "您正在重置 OneCloud Panel 登录密码，重置码：" + code + "（15 分钟内有效）。",
-		To:    phone,
-		Code:  code,
-	}
-	if err := sender.Send(msg); err != nil {
+	if err := a.sendUserSMS(u, "OneCloud Panel 密码重置码",
+		"您正在重置 OneCloud Panel 登录密码，重置码："+code+"（15 分钟内有效）。"); err != nil {
 		return "", err
 	}
 	return "已发送短信至 " + maskPhone(phone), nil
@@ -97,6 +113,25 @@ func (a *API) smsChannelFor(u *store.User) (*store.NotificationChannel, error) {
 	return a.readySMSChannel()
 }
 
+// sendUserChannel 通过用户绑定的通知通道发送通用消息（启用+配置完整的通道才可发送）。
+func (a *API) sendUserChannel(u *store.User, title, body string) error {
+	if u.NotifyChannelID == nil || *u.NotifyChannelID <= 0 {
+		return errors.New("用户未指定通知通道")
+	}
+	c, err := a.store.NotificationChannelByID(*u.NotifyChannelID)
+	if err != nil {
+		return errors.New("通知通道不存在")
+	}
+	if !c.Enabled {
+		return errors.New("通知通道未启用")
+	}
+	sender, err := notify.Build(c.Type, parseConfig(c.ConfigJSON))
+	if err != nil {
+		return err
+	}
+	return sender.Send(notify.Message{Title: title, Body: body, To: derefStr(u.NotifyTarget)})
+}
+
 // deliverByChannel 仅通过用户指定的那一条通知通道下发。
 func (a *API) deliverByChannel(u *store.User, code string) (string, error) {
 	if u.NotifyChannelID == nil || *u.NotifyChannelID <= 0 {
@@ -106,20 +141,8 @@ func (a *API) deliverByChannel(u *store.User, code string) (string, error) {
 	if err != nil {
 		return "", errors.New("通知通道不存在")
 	}
-	if !c.Enabled {
-		return "", errors.New("通知通道未启用")
-	}
-	sender, err := notify.Build(c.Type, parseConfig(c.ConfigJSON))
-	if err != nil {
-		return "", err
-	}
-	msg := notify.Message{
-		Title: "OneCloud Panel 密码重置码",
-		Body:  "您正在重置 OneCloud Panel 登录密码。\n重置码：" + code + "\n有效期：15 分钟",
-		Code:  code,
-		To:    derefStr(u.NotifyTarget), // 个性化：按用户接收标识定向
-	}
-	if err := sender.Send(msg); err != nil {
+	if err := a.sendUserChannel(u, "OneCloud Panel 密码重置码",
+		"您正在重置 OneCloud Panel 登录密码。\n重置码："+code+"\n有效期：15 分钟"); err != nil {
 		return "", err
 	}
 	return "已发送至通知通道 " + c.Name, nil

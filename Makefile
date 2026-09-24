@@ -14,7 +14,7 @@ DIST := dist
 
 all: build
 
-build: $(DIST)/$(BIN)-linux-armv7 $(DIST)/$(BIN)-linux-arm64 $(DIST)/$(BIN)-linux-amd64 $(DIST)/$(BIN)-linux-386
+build: $(DIST)/$(BIN)-linux-armv7 $(DIST)/$(BIN)-linux-arm64 $(DIST)/$(BIN)-windows-amd64.exe
 
 $(DIST):
 	mkdir -p $(DIST)
@@ -25,11 +25,8 @@ $(DIST)/$(BIN)-linux-armv7: $(DIST)
 $(DIST)/$(BIN)-linux-arm64: $(DIST)
 	GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -trimpath -ldflags "$(LDFLAGS)" -o $@ ./cmd/onecloud-panel
 
-$(DIST)/$(BIN)-linux-amd64: $(DIST)
-	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags "$(LDFLAGS)" -o $@ ./cmd/onecloud-panel
-
-$(DIST)/$(BIN)-linux-386: $(DIST)
-	GOOS=linux GOARCH=386 CGO_ENABLED=0 go build -trimpath -ldflags "$(LDFLAGS)" -o $@ ./cmd/onecloud-panel
+$(DIST)/$(BIN)-windows-amd64.exe: $(DIST)
+	GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags "$(LDFLAGS)" -o $@ ./cmd/onecloud-panel
 
 test:
 	CGO_ENABLED=0 go test ./... -p 1

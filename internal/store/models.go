@@ -51,6 +51,25 @@ type CustomApp struct {
 	UpdatedAt   int64
 }
 
+// ShellScript 用户上传的 SH 脚本（应用管理「脚本」页签）。
+type ShellScript struct {
+	ID          int64
+	Name        string
+	Description string
+	Content     string
+	OwnerUserID *int64 // 创建者；NULL=系统级(管理员)
+	CreatedAt   int64
+	UpdatedAt   int64
+}
+
+// ShellScriptDeployment 脚本在某节点上的部署状态（脚本×节点维度）。
+type ShellScriptDeployment struct {
+	ScriptID    int64
+	NodeID      int64
+	AutoStart   bool
+	ContentHash string
+}
+
 // Node 集群节点。
 type Node struct {
 	ID                       int64

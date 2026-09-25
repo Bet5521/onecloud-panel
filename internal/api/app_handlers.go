@@ -28,8 +28,9 @@ func nodeAppFromPath(r *http.Request) (int64, string, error) {
 }
 
 type installReq struct {
-	Method string            `json:"method"`
-	Vars   map[string]string `json:"vars"`
+	Method string               `json:"method"`
+	Vars   map[string]string    `json:"vars"`
+	Docker *apps.DockerOverride `json:"docker"` // 容器安装的端口/卷/ENV/重启策略覆盖
 }
 
 // POST /api/nodes/{id}/apps/{app}/install
@@ -83,8 +84,16 @@ func (a *API) installApp(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	// Docker 覆盖参数校验（仅容器安装）
+	if req.Method == "docker" {
+		if err := a.apps.ValidateDockerOverride(appID, req.Docker); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+	}
 	payload := apps.TaskPayload{
 		NodeID: nodeID, AppID: appID, Method: req.Method, Vars: req.Vars,
+		Docker: req.Docker,
 	}
 	data, _ := json.Marshal(payload)
 	id, err := a.store.CreateTask(&store.BackgroundTask{

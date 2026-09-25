@@ -67,6 +67,37 @@
         <el-empty v-if="!can('app:read')" description="无查看权限" />
       </el-tab-pane>
 
+      <el-tab-pane label="脚本" name="scripts">
+        <div class="filter-bar" v-if="can('app:read')">
+          <el-button v-if="can('app:write')" type="primary" @click="openCreateScript">新建脚本</el-button>
+          <span class="muted">编写 sh 脚本部署到节点执行，可设置开机自启（systemd oneshot，开机执行一次）。</span>
+        </div>
+
+        <el-table :data="scripts" v-loading="scriptsLoading" v-if="can('app:read')">
+          <el-table-column prop="name" label="名称" min-width="140" />
+          <el-table-column prop="description" label="描述" min-width="180" show-overflow-tooltip />
+          <el-table-column label="归属" width="90">
+            <template #default="{ row }">
+              <el-tag size="small" :type="row.system ? 'info' : 'primary'" effect="plain">
+                {{ row.system ? '系统级' : '个人' }}
+              </el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column label="更新时间" width="180">
+            <template #default="{ row }">{{ fmtTime(row.updated_at) }}</template>
+          </el-table-column>
+          <el-table-column label="操作" width="220">
+            <template #default="{ row }">
+              <el-button link type="primary" :disabled="!can('app:write')" @click="openDeployScript(row)">部署</el-button>
+              <el-button link type="primary" :disabled="!can('app:write')" @click="openRunScript(row)">运行</el-button>
+              <el-button link type="primary" :disabled="!scriptEditable(row)" @click="openEditScript(row)">编辑</el-button>
+              <el-button link type="danger" :disabled="!scriptEditable(row)" @click="removeScript(row)">删除</el-button>
+            </template>
+          </el-table-column>
+        </el-table>
+        <el-empty v-if="!can('app:read')" description="无查看权限" />
+      </el-tab-pane>
+
       <el-tab-pane label="已安装" name="installed">
         <el-table :data="installedRows" v-loading="instLoading" size="default">
           <el-table-column label="节点" min-width="140">
@@ -125,6 +156,34 @@
           <el-switch v-else-if="v.type === 'bool'" v-model="boolVars[v.key]" />
           <el-input-number v-else-if="v.type === 'int'" v-model="numVars[v.key]" :min="0" />
           <el-input v-else v-model="form.vars[v.key]" :placeholder="v.description || ''" />
+        </el-form-item>
+      </template>
+
+      <!-- 容器高级设置：覆盖配方默认的端口/环境变量/数据卷/重启策略 -->
+      <template v-if="form.method === 'docker' && recipe?.Docker">
+        <el-divider content-position="left">容器高级设置（可选）</el-divider>
+        <el-form-item label="端口映射">
+          <el-input v-model="ovForm.ports" type="textarea" :rows="2"
+            placeholder="每行或逗号分隔：8080:80/tcp（留空使用配方默认）" />
+        </el-form-item>
+        <el-form-item label="环境变量">
+          <el-input v-model="ovForm.env" type="textarea" :rows="2"
+            placeholder="TZ=Asia/Shanghai（与配方默认合并，同 KEY 覆盖）" />
+        </el-form-item>
+        <el-form-item label="数据卷">
+          <el-input v-model="ovForm.volumes" type="textarea" :rows="2"
+            placeholder="/data/app:/data（留空使用配方默认）" />
+        </el-form-item>
+        <el-form-item label="重启策略">
+          <el-select v-model="ovForm.restart" style="width: 100%" clearable placeholder="跟随配方默认">
+            <el-option label="unless-stopped" value="unless-stopped" />
+            <el-option label="always" value="always" />
+            <el-option label="on-failure" value="on-failure" />
+            <el-option label="no" value="no" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label=" ">
+          <span class="hint">端口与数据卷为整体替换，环境变量为增量合并；留空或不改即使用配方默认值。</span>
         </el-form-item>
       </template>
     </el-form>
@@ -261,6 +320,70 @@
     </template>
   </el-dialog>
 
+  <!-- 脚本新建/编辑对话框 -->
+  <el-dialog v-model="scriptDlg" :title="scriptEditingId ? '编辑脚本' : '新建脚本'" width="680px" destroy-on-close>
+    <el-form label-width="90px">
+      <el-form-item label="名称" required>
+        <el-input v-model="scriptForm.name" maxlength="64" placeholder="脚本名称" />
+      </el-form-item>
+      <el-form-item label="描述">
+        <el-input v-model="scriptForm.description" type="textarea" :rows="2" />
+      </el-form-item>
+      <el-form-item label="脚本内容" required>
+        <el-input v-model="scriptForm.content" type="textarea" :rows="14" class="mono-area"
+          placeholder="#!/bin/sh&#10;echo hello" />
+        <span class="hint">保存后需重新「部署」到节点，修改才会在节点上生效。</span>
+      </el-form-item>
+      <el-form-item v-if="isAdmin" label="系统级">
+        <el-switch v-model="scriptForm.system" />
+        <span class="hint">管理员勾选后该脚本对所有用户可见。</span>
+      </el-form-item>
+    </el-form>
+    <template #footer>
+      <el-button @click="scriptDlg = false">取消</el-button>
+      <el-button type="primary" :loading="scriptSaving" @click="submitScript">保存</el-button>
+    </template>
+  </el-dialog>
+
+  <!-- 脚本部署对话框 -->
+  <el-dialog v-model="deployDlg" :title="`部署脚本：${deployingScript?.name || ''}`" width="480px" destroy-on-close>
+    <el-form label-width="90px">
+      <el-form-item label="目标节点" required>
+        <el-select v-model="deployForm.node_id" style="width: 100%" placeholder="选择节点">
+          <el-option v-for="n in nodeOptions" :key="n.id"
+            :label="n.name + (n.mode === 'local' ? '（本机）' : '')" :value="n.id" />
+        </el-select>
+      </el-form-item>
+      <el-form-item label="开机自启">
+        <el-switch v-model="deployForm.auto_start" />
+        <span class="hint">注册 systemd oneshot 服务，节点开机时自动执行一次。</span>
+      </el-form-item>
+      <el-form-item v-if="deployStatus" label="当前状态">
+        <span class="muted">{{ deployStatus }}</span>
+      </el-form-item>
+    </el-form>
+    <template #footer>
+      <el-button @click="deployDlg = false">取消</el-button>
+      <el-button type="primary" :loading="deploying" @click="submitDeploy">部署</el-button>
+    </template>
+  </el-dialog>
+
+  <!-- 脚本运行对话框 -->
+  <el-dialog v-model="runDlg" :title="`运行脚本：${runningScript?.name || ''}`" width="480px" destroy-on-close>
+    <el-form label-width="90px">
+      <el-form-item label="目标节点" required>
+        <el-select v-model="runForm.node_id" style="width: 100%" placeholder="选择节点">
+          <el-option v-for="n in nodeOptions" :key="n.id"
+            :label="n.name + (n.mode === 'local' ? '（本机）' : '')" :value="n.id" />
+        </el-select>
+      </el-form-item>
+    </el-form>
+    <template #footer>
+      <el-button @click="runDlg = false">取消</el-button>
+      <el-button type="primary" :loading="running" @click="submitRun">运行</el-button>
+    </template>
+  </el-dialog>
+
   <input ref="uploadInput" type="file" hidden @change="onUploadChange" />
 
   <TaskProgressDialog v-if="taskId" :task-id="taskId"
@@ -317,6 +440,7 @@ const instLoading = ref(false)
 function onTabChange(name) {
   if (name === 'installed') loadInstalled()
   if (name === 'custom') loadCustomApps()
+  if (name === 'scripts') loadScripts()
 }
 
 async function loadInstalled() {
@@ -342,6 +466,8 @@ const recipe = ref(null)
 const form = reactive({ node_id: null, method: 'native', vars: {} })
 const boolVars = reactive({})
 const numVars = reactive({})
+// 容器高级设置（覆盖配方默认）：字符串形式，提交时拆分
+const ovForm = reactive({ ports: '', env: '', volumes: '', restart: '' })
 
 const nodeOptions = computed(() => nodes.value.filter((n) => n.status !== 'disabled' && n.online))
 
@@ -387,6 +513,11 @@ function openInstall(r) {
   }
   // 默认方式随选中节点的兼容性决定（节点变化时 watch 同步）
   form.method = availableMethods.value[0]?.method || 'native'
+  // 容器高级设置预填配方默认值（custom 应用 Docker 为空对象，即全部留空）
+  ovForm.ports = (r.Docker?.Ports || []).join('\n')
+  ovForm.env = (r.Docker?.Env || []).join('\n')
+  ovForm.volumes = (r.Docker?.Volumes || []).join('\n')
+  ovForm.restart = r.Docker?.RestartPolicy || ''
   installVisible.value = true
 }
 
@@ -410,10 +541,12 @@ async function submit() {
   }
   submitting.value = true
   try {
-    const d = await post(`/api/nodes/${form.node_id}/apps/${recipe.value.ID}/install`, {
-      method: form.method, vars
-    })
+    const payload = { method: form.method, vars }
+    const docker = buildDockerOverride()
+    if (docker) payload.docker = docker
+    const d = await post(`/api/nodes/${form.node_id}/apps/${recipe.value.ID}/install`, payload)
     installVisible.value = false
+    taskKind = 'install'
     taskId.value = d.task_id
   } catch (e) {
     showErr(e, '安装任务创建失败')
@@ -422,8 +555,33 @@ async function submit() {
   }
 }
 
+// 组装容器覆盖参数：仅在用户实际改动（或新增环境变量）时提交，保持安装记录简洁
+function buildDockerOverride() {
+  if (form.method !== 'docker') return null
+  const spec = recipe.value.Docker || {}
+  const docker = {}
+  const ports = toArr(ovForm.ports)
+  const volumes = toArr(ovForm.volumes)
+  const env = toArr(ovForm.env)
+  if (ports.length && !arrEq(ports, spec.Ports || [])) docker.ports = ports
+  if (volumes.length && !arrEq(volumes, spec.Volumes || [])) docker.volumes = volumes
+  if (env.length) docker.env = env
+  if (ovForm.restart && ovForm.restart !== (spec.RestartPolicy || '')) docker.restart = ovForm.restart
+  return Object.keys(docker).length ? docker : null
+}
+
+function arrEq(a, b) {
+  return a.length === b.length && a.every((x, i) => x === b[i])
+}
+
 const taskId = ref(null)
+// 任务来源标记：安装任务结束切到「已安装」，脚本运行结束刷新脚本列表
+let taskKind = 'install'
 function onFinished() {
+  if (taskKind === 'script_run') {
+    loadScripts()
+    return
+  }
   tab.value = 'installed'
   loadInstalled()
 }
@@ -700,6 +858,189 @@ async function removeCustom(c) {
     showErr(e, '删除失败')
   }
 }
+
+// ---- SH 脚本管理 ----
+const scripts = ref([])
+const scriptsLoading = ref(false)
+const scriptDlg = ref(false)
+const scriptEditingId = ref(null)
+const scriptSaving = ref(false)
+const scriptForm = reactive({ name: '', description: '', content: '', system: false })
+
+// 编辑/删除：管理员或创建者本人（系统级仅管理员）
+const scriptEditable = (row) => isAdmin.value || row.owner_user_id === session.user?.id
+
+async function loadScripts() {
+  if (!can('app:read')) return
+  scriptsLoading.value = true
+  try {
+    const d = await get('/api/scripts')
+    scripts.value = d.items || []
+  } catch (e) {
+    showErr(e, '加载脚本失败')
+  } finally {
+    scriptsLoading.value = false
+  }
+}
+
+function openCreateScript() {
+  scriptEditingId.value = null
+  scriptForm.name = ''
+  scriptForm.description = ''
+  scriptForm.content = ''
+  scriptForm.system = false
+  scriptDlg.value = true
+}
+
+async function openEditScript(row) {
+  scriptEditingId.value = row.id
+  scriptForm.name = row.name
+  scriptForm.description = row.description || ''
+  scriptForm.content = ''
+  scriptForm.system = !!row.system
+  scriptDlg.value = true
+  // 列表不含内容，编辑前取详情回填
+  try {
+    const d = await get('/api/scripts/' + row.id)
+    scriptForm.name = d.name
+    scriptForm.description = d.description || ''
+    scriptForm.content = d.content || ''
+    scriptForm.system = !!d.system
+  } catch (e) {
+    showErr(e, '加载脚本详情失败')
+  }
+}
+
+async function submitScript() {
+  if (!scriptForm.name.trim()) {
+    ElMessage.warning('请填写脚本名称')
+    return
+  }
+  if (!scriptForm.content.trim()) {
+    ElMessage.warning('请填写脚本内容')
+    return
+  }
+  scriptSaving.value = true
+  try {
+    const payload = {
+      name: scriptForm.name.trim(),
+      description: scriptForm.description,
+      content: scriptForm.content
+    }
+    if (isAdmin.value && scriptForm.system) payload.system = true
+    if (scriptEditingId.value) {
+      await put('/api/scripts/' + scriptEditingId.value, payload)
+      ElMessage.success('已保存')
+    } else {
+      await post('/api/scripts', payload)
+      ElMessage.success('已创建')
+    }
+    scriptDlg.value = false
+    loadScripts()
+  } catch (e) {
+    showErr(e, '保存失败')
+  } finally {
+    scriptSaving.value = false
+  }
+}
+
+// ---- 脚本部署 ----
+const deployDlg = ref(false)
+const deployingScript = ref(null)
+const deploying = ref(false)
+const deployForm = reactive({ node_id: null, auto_start: false })
+const deployStatus = ref('')
+
+watch(() => deployForm.node_id, async (nid) => {
+  deployStatus.value = ''
+  if (!nid || !deployingScript.value) return
+  try {
+    const d = await get(`/api/scripts/${deployingScript.value.id}/deployments`)
+    const dep = (d.items || []).find((x) => x.node_id === nid)
+    if (!dep) {
+      deployStatus.value = '该节点未部署'
+    } else {
+      deployStatus.value = '已部署（开机自启: ' + (dep.auto_start ? '开' : '关') + '）'
+      deployForm.auto_start = !!dep.auto_start
+    }
+  } catch { /* 状态展示失败不影响部署 */ }
+})
+
+function openDeployScript(row) {
+  deployingScript.value = row
+  deployForm.node_id = nodeOptions.value[0]?.id ?? null
+  deployForm.auto_start = false
+  deployStatus.value = ''
+  deployDlg.value = true
+}
+
+async function submitDeploy() {
+  if (!deployForm.node_id) {
+    ElMessage.warning('请选择目标节点')
+    return
+  }
+  deploying.value = true
+  try {
+    await post(`/api/scripts/${deployingScript.value.id}/deploy`, {
+      node_id: deployForm.node_id,
+      auto_start: deployForm.auto_start
+    })
+    ElMessage.success('部署完成')
+    deployDlg.value = false
+  } catch (e) {
+    showErr(e, '部署失败')
+  } finally {
+    deploying.value = false
+  }
+}
+
+// ---- 脚本运行 ----
+const runDlg = ref(false)
+const runningScript = ref(null)
+const running = ref(false)
+const runForm = reactive({ node_id: null })
+
+function openRunScript(row) {
+  runningScript.value = row
+  runForm.node_id = nodeOptions.value[0]?.id ?? null
+  runDlg.value = true
+}
+
+async function submitRun() {
+  if (!runForm.node_id) {
+    ElMessage.warning('请选择目标节点')
+    return
+  }
+  running.value = true
+  try {
+    const d = await post(`/api/scripts/${runningScript.value.id}/run`, { node_id: runForm.node_id })
+    runDlg.value = false
+    taskKind = 'script_run'
+    taskId.value = d.task_id
+  } catch (e) {
+    showErr(e, '运行任务创建失败')
+  } finally {
+    running.value = false
+  }
+}
+
+async function removeScript(row) {
+  try {
+    await ElMessageBox.confirm(
+      `确定删除脚本「${row.name}」吗？各节点上已部署的副本将尽力清理（含开机自启服务）。`,
+      '提示', { type: 'warning' }
+    )
+  } catch {
+    return
+  }
+  try {
+    await del('/api/scripts/' + row.id)
+    ElMessage.success('已删除')
+    loadScripts()
+  } catch (e) {
+    showErr(e, '删除失败')
+  }
+}
 </script>
 
 <style scoped>
@@ -761,5 +1102,9 @@ async function removeCustom(c) {
   line-height: 1.6;
   display: block;
   margin-top: 4px;
+}
+.mono-area :deep(.el-textarea__inner) {
+  font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+  font-size: 13px;
 }
 </style>

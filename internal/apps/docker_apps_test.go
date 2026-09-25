@@ -238,7 +238,7 @@ func dockerAppsSetup(t *testing.T) (*Manager, *fakeExec, *fakeContainers, *store
 func TestDockerAppInstall(t *testing.T) {
 	mgr, _, fc, s := dockerAppsSetup(t)
 	var buf bytes.Buffer
-	if err := mgr.DockerInstall(context.Background(), &buf, 1, "dtest", nil); err != nil {
+	if err := mgr.DockerInstall(context.Background(), &buf, 1, "dtest", nil, nil); err != nil {
 		t.Fatalf("DockerInstall: %v\n输出:\n%s", err, buf.String())
 	}
 	in, err := s.GetInstallation(1, "dtest")
@@ -278,7 +278,7 @@ func TestDockerAppInstall(t *testing.T) {
 	}
 
 	// 重复安装拒绝
-	if err := mgr.DockerInstall(context.Background(), &bytes.Buffer{}, 1, "dtest", nil); err == nil {
+	if err := mgr.DockerInstall(context.Background(), &bytes.Buffer{}, 1, "dtest", nil, nil); err == nil {
 		t.Fatal("重复安装应拒绝")
 	}
 }
@@ -286,7 +286,7 @@ func TestDockerAppInstall(t *testing.T) {
 // TR-13.2 卸载：默认保留卷；purgeData 删除命名卷；镜像保留；记录删除。
 func TestDockerAppUninstall(t *testing.T) {
 	mgr, _, fc, s := dockerAppsSetup(t)
-	if err := mgr.DockerInstall(context.Background(), &bytes.Buffer{}, 1, "dtest", nil); err != nil {
+	if err := mgr.DockerInstall(context.Background(), &bytes.Buffer{}, 1, "dtest", nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	var buf bytes.Buffer
@@ -304,7 +304,7 @@ func TestDockerAppUninstall(t *testing.T) {
 	}
 
 	// 再次安装后 purgeData=true
-	if err := mgr.DockerInstall(context.Background(), &bytes.Buffer{}, 1, "dtest", nil); err != nil {
+	if err := mgr.DockerInstall(context.Background(), &bytes.Buffer{}, 1, "dtest", nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	if err := mgr.DockerUninstall(context.Background(), &bytes.Buffer{}, 1, "dtest", true); err != nil {
@@ -319,7 +319,7 @@ func TestDockerAppUninstall(t *testing.T) {
 func TestDockerAppArchMismatch(t *testing.T) {
 	mgr, _, fc, _ := dockerAppsSetup(t)
 	// 先正常安装并卸载
-	err := mgr.DockerInstall(context.Background(), &bytes.Buffer{}, 1, "dtest", nil)
+	err := mgr.DockerInstall(context.Background(), &bytes.Buffer{}, 1, "dtest", nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -328,7 +328,7 @@ func TestDockerAppArchMismatch(t *testing.T) {
 		t.Fatal(err)
 	}
 	fc.pullArch = "amd64"
-	err = mgr.DockerInstall(context.Background(), &bytes.Buffer{}, 1, "dtest", nil)
+	err = mgr.DockerInstall(context.Background(), &bytes.Buffer{}, 1, "dtest", nil, nil)
 	if err == nil || !strings.Contains(err.Error(), "架构") {
 		t.Fatalf("架构不匹配应拦截: %v", err)
 	}
@@ -337,7 +337,7 @@ func TestDockerAppArchMismatch(t *testing.T) {
 // TR-13.1 动作/状态/日志走容器实现。
 func TestDockerAppActions(t *testing.T) {
 	mgr, _, _, _ := dockerAppsSetup(t)
-	if err := mgr.DockerInstall(context.Background(), &bytes.Buffer{}, 1, "dtest", nil); err != nil {
+	if err := mgr.DockerInstall(context.Background(), &bytes.Buffer{}, 1, "dtest", nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	name, err := mgr.ServiceAction(context.Background(), 1, "dtest", "stop")
@@ -383,7 +383,7 @@ func TestDockerAppReconcile(t *testing.T) {
 		t.Fatalf("无容器应 failure: %+v %v", d, err)
 	}
 
-	if err := mgr.DockerInstall(context.Background(), &bytes.Buffer{}, 1, "dtest", nil); err != nil {
+	if err := mgr.DockerInstall(context.Background(), &bytes.Buffer{}, 1, "dtest", nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	// 容器运行中 → success

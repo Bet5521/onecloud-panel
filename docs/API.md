@@ -100,6 +100,15 @@ GET /api/dashboard/summary
 | POST | `/api/nodes/{id}/docker/install` | 安装 Docker |
 | PUT | `/api/nodes/{id}/docker-config` | 保存节点镜像加速/第三方仓库配置 |
 | POST | `/api/nodes/{id}/docker/apply-config` | 下发配置到节点 daemon.json（入队任务） |
+| GET | `/api/nodes/{id}/storage/devices` | 块设备列表（含挂载点/文件系统） |
+| POST | `/api/nodes/{id}/storage/mount` | 挂载设备（可同时写入 fstab 自启） |
+| POST | `/api/nodes/{id}/storage/unmount` | 卸载设备 |
+| POST | `/api/nodes/{id}/storage/autostart` | 设置/取消开机自动挂载（写 fstab） |
+| GET | `/api/nodes/{id}/firewall` | 检测防火墙状态（后端/启停/规则列表） |
+| POST | `/api/nodes/{id}/firewall/rules` | 新增防火墙规则 |
+| POST | `/api/nodes/{id}/firewall/rules/remove` | 删除防火墙规则 |
+| POST | `/api/nodes/{id}/firewall/toggle` | 开启/关闭防火墙 |
+| GET | `/api/nodes/{id}/terminal` | WebSocket SSH 终端（升级连接，非 REST） |
 | GET | `/api/network-suggest?address=host:port` | 按地址建议节点接入类型 |
 | GET | `/api/registration-tokens` | 注册令牌列表 |
 | POST | `/api/registration-tokens` | 创建注册令牌 |
@@ -134,6 +143,74 @@ GET /api/nodes/ssh-install?id=31
        "output":"…SSH 正在连接…\n[远端] 执行 Agent 安装命令：…","error":"",
        "created_at":…,"started_at":…,"finished_at":null}
 # 任务不存在或非本类型 → 404；缺 id 或 id 非法 → 400
+
+# ---- 存储设备与 SD 卡挂载 ----
+GET /api/nodes/1/storage/devices
+→ 200 {"devices":[{"name":"sda1","path":"/dev/sda1","size":32007032064,
+       "type":"part","fstype":"vfat","mountpoint":"","removable":true,
+       "hotplug":true,"model":"SD Card","read_only":false}]}
+# 由 Agent 执行 lsblk 汇总，仅返回 disk/part；本地节点直接本机执行
+
+POST /api/nodes/1/storage/mount
+{"device":"/dev/sda1","mountpoint":"/mnt/sd-sda1"}
+→ 200
+# 设备须 /dev/ 开头、挂载点须 / 开头；含空白或 shell 元字符 → 400
+
+POST /api/nodes/1/storage/unmount
+{"device":"/dev/sda1","mountpoint":"/mnt/sd-sda1"}
+→ 200
+
+POST /api/nodes/1/storage/autostart
+{"device":"/dev/sda1","mountpoint":"/mnt/sd-sda1","enabled":true}
+→ 200
+# enabled=true：blkid 取 UUID 后以 nofail 方式追加/更新 /etc/fstab，
+# 原文件先备份为 /etc/fstab.ocp.bak；enabled=false：移除该挂载点对应条目
+
+# ---- 节点防火墙管理 ----
+GET /api/nodes/1/firewall
+→ 200 {"backend":"ufw","active":true,
+       "rules":[{"port":"22","proto":"","action":"allow","source":""},
+                {"port":"53","proto":"udp","action":"allow","source":"10.0.0.0/8"}],
+       "detail":"Status: active\nTo     Action  From\n--     ------  ----\n…"}
+# backend：ufw / firewalld / nftables / iptables / none（按节点实际安装探测，优先级同序）
+# detail 为后端原始状态文本，供前端折叠展示；检测失败（Agent 不可达等）→ 502
+
+POST /api/nodes/1/firewall/rules
+{"port":"50000:50100","proto":"","action":"allow","source":""}
+→ 200 {"status":"ok"}
+# port 支持 "53" 或范围 "50000:50100"（1–65535、起≤止）；proto：tcp/udp/""（both，
+# firewalld/iptables 后端自动拆成 tcp+udp 两条规则）；action：allow/deny；
+# source 可选 IP/CIDR（留空=任意地址）。格式非法 → 400；
+# 未检测到防火墙工具（backend=none）→ 502
+
+POST /api/nodes/1/firewall/rules/remove
+{"port":"53","proto":"udp","action":"deny","source":"10.0.0.0/8"}
+→ 200 {"status":"ok"}
+# 按 port/proto/action/source 四元组精确匹配删除（nftables 按 handle 定位）；
+# 无匹配规则或执行失败 → 502
+
+POST /api/nodes/1/firewall/toggle
+{"enabled":false}
+→ 200 {"status":"ok"}
+# 仅 ufw/firewalld 支持一键开关；iptables/nftables → 502（提示通过节点终端手动管理）
+
+# ---- WebSocket 终端（GET /api/nodes/{id}/terminal）----
+# 鉴权与 REST 相同（Cookie），连接后以 JSON 帧通信；终端二进制数据经 base64 编码。
+# 目标主机取节点 Address（local 节点为回环），SSH 密码仅内存使用，不落库不写日志。
+#
+# 客户端 → 服务端：
+#   {"action":"start","user":"root","password":"<SSH密码>","port":22,
+#    "term":"xterm-256color","cols":80,"rows":24,"host_key_fingerprint":""}
+#     - password 必填，缺失 → error 帧；user 空 → root；port 0 → 22
+#     - host_key_policy 固定 pin：已知指纹不匹配 → error；首次连接 → hostkey 帧
+#   {"action":"input","data":"<base64 键入内容>"}
+#   {"action":"resize","cols":120,"rows":30}   // 窗口尺寸变化时发送
+# 服务端 → 客户端：
+#   {"type":"hostkey","fingerprint":"SHA256:…"}  // 首连指纹确认，确认后重发 start 并带上该指纹
+#   {"type":"started"}                            // PTY 建立，开始双向传输
+#   {"type":"output","data":"<base64 终端输出>"}
+#   {"type":"exit"}                               // 远端 shell 退出，服务端随后关闭连接
+#   {"type":"error","message":"…"}                // 连接失败/参数缺失等
 ```
 
 ## 五、应用与任务
@@ -152,14 +229,48 @@ GET /api/nodes/ssh-install?id=31
 | GET | `/api/nodes/{id}/apps/{app}/journal` | 应用日志 |
 | GET | `/api/nodes/{id}/apps/{app}/config` | 读取应用配置 |
 | PUT | `/api/nodes/{id}/apps/{app}/config` | 写入应用配置 |
+| GET | `/api/scripts` | 脚本列表（本人 + 系统级） |
+| POST | `/api/scripts` | 新建脚本 |
+| GET | `/api/scripts/{id}` | 脚本详情 |
+| PUT | `/api/scripts/{id}` | 编辑脚本 |
+| DELETE | `/api/scripts/{id}` | 删除脚本 |
+| GET | `/api/scripts/{id}/deployments` | 脚本部署状态（按节点） |
+| POST | `/api/scripts/{id}/deploy` | 部署脚本到节点（入队任务） |
+| POST | `/api/scripts/{id}/run` | 节点上立即运行脚本（入队任务） |
 | GET | `/api/tasks` | 任务列表（支持 limit/type/status 查询参数） |
 | GET | `/api/tasks/{id}` | 任务详情（含 output/error） |
 
 ```bash
 POST /api/nodes/1/apps/adguard-home/install
-{"method":"native","vars":{}}
+{"method":"native","vars":{},"docker":{"ports":["53:53/tcp","53:53/udp"],
+ "volumes":["/opt/adguard/work:/opt/adguard/work"],
+ "env":["TZ=Asia/Shanghai"],"restart":"unless-stopped"}}
 → 200 {"task_id":12}
 # 架构/配方不兼容或变量非法 → 400；不支持的 method → 400
+# docker 仅容器安装可覆盖：ports（宿主:容器[/tcp|udp]）、volumes（宿主路径或命名卷:容器路径[:ro]）、
+# env（KEY=VALUE，重复键 400）、restart（no/always/unless-stopped/on-failure，留空用配方默认）；
+# 字段非法或含注入字符 → 400，覆盖项与配方参数合并后生成 docker run
+
+# ---- SH 脚本管理 ----
+POST /api/scripts
+{"name":"挂载备份盘","description":"格式化并挂载","content":"#!/bin/sh\n…",
+ "system":false}
+→ 200 {"id":3,"name":"挂载备份盘",…}
+# 权限沿用 app:read/app:write；普通用户仅可见本人脚本，system=true 仅管理员可设（脚本归系统级）
+
+PUT /api/scripts/3      # 编辑后内容 hash 变化，已部署节点显示待更新
+DELETE /api/scripts/3   # 同时清理部署记录
+
+POST /api/scripts/3/deploy
+{"node_id":1,"auto_start":true}
+→ 200 {"task_id":41}
+# 脚本写入节点 /etc/onecloud-scripts/{id}.sh，自启用 systemd 单元 ocp-script-{id}.service；
+# auto_start=true 时 systemctl enable 开机自启，部署内容以 hash 记录便于检测更新
+
+POST /api/scripts/3/run
+{"node_id":1}
+→ 200 {"task_id":42}
+# 在节点上立即执行一次，输出经 /api/tasks/42 查询
 
 POST /api/nodes/1/apps/adguard-home/uninstall
 {"purge_data":false}

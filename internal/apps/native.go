@@ -59,7 +59,7 @@ func (m *Manager) Install(ctx context.Context, w io.Writer,
 			if _, cerr := m.store.CreateInstallation(&store.AppInstallation{
 				NodeID: nodeID, AppID: recipeID, Method: "native",
 				Status: "error", ServiceName: ns.UnitName,
-				Params: paramsJSON(vars),
+				Params: paramsJSON(vars, nil),
 			}); cerr != nil {
 				fmt.Fprintf(w, "  警告: 异常安装记录写入失败: %v\n", cerr)
 			}
@@ -72,7 +72,7 @@ func (m *Manager) Install(ctx context.Context, w io.Writer,
 		}
 	}
 
-	params := paramsJSON(vars)
+	params := paramsJSON(vars, nil)
 	if _, err := m.store.CreateInstallation(&store.AppInstallation{
 		NodeID: nodeID, AppID: recipeID, Method: "native",
 		Status: "installed", ServiceName: ns.UnitName, Params: params,

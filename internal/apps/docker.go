@@ -89,8 +89,9 @@ type containerListItem struct {
 // ---- 安装 ----
 
 // DockerInstall 容器方式安装（幂等：同名容器存在即拒绝）。
+// ov 为可选的端口/卷/环境变量/重启策略覆盖（见 DockerOverride）。
 func (m *Manager) DockerInstall(ctx context.Context, w io.Writer,
-	nodeID int64, recipeID string, vars map[string]string) error {
+	nodeID int64, recipeID string, vars map[string]string, ov *DockerOverride) error {
 
 	n, recipe, rendered, ex, err := m.prepare(nodeID, recipeID, "docker", vars)
 	if err != nil {
@@ -100,6 +101,9 @@ func (m *Manager) DockerInstall(ctx context.Context, w io.Writer,
 		return err
 	}
 	ds := rendered.Recipe.Docker
+	if err := applyDockerOverride(ds, ov); err != nil {
+		return err
+	}
 	eng, err := m.EngineFor(n)
 	if err != nil {
 		return err
@@ -167,7 +171,7 @@ func (m *Manager) DockerInstall(ctx context.Context, w io.Writer,
 			if _, cerr := m.store.CreateInstallation(&store.AppInstallation{
 				NodeID: nodeID, AppID: recipeID, Method: "docker",
 				Status: "error", ContainerID: created.ID, ContainerName: cname,
-				Params: paramsJSON(vars),
+				Params: paramsJSON(vars, ov),
 			}); cerr != nil {
 				fmt.Fprintf(w, "  警告: 异常安装记录写入失败: %v\n", cerr)
 			}
@@ -180,7 +184,7 @@ func (m *Manager) DockerInstall(ctx context.Context, w io.Writer,
 	if _, err := m.store.CreateInstallation(&store.AppInstallation{
 		NodeID: nodeID, AppID: recipeID, Method: "docker",
 		Status: "installed", ContainerID: created.ID,
-		ContainerName: cname, Params: paramsJSON(vars),
+		ContainerName: cname, Params: paramsJSON(vars, ov),
 	}); err != nil {
 		return err
 	}
@@ -398,6 +402,10 @@ func (m *Manager) DockerUninstall(ctx context.Context, w io.Writer,
 	n, recipe, rendered, _, err := m.prepare(nodeID, recipeID, "docker", installationVars(in))
 	if err != nil {
 		return err
+	}
+	// 应用安装时的 Docker 覆盖，保证命名卷清理与安装时一致
+	if err := applyDockerOverride(rendered.Recipe.Docker, installationDocker(in)); err != nil {
+		return fmt.Errorf("应用安装参数失败: %w", err)
 	}
 	eng, err := m.EngineFor(n)
 	if err != nil {

@@ -20,6 +20,7 @@ type TaskPayload struct {
 	Method    string            `json:"method"`
 	PurgeData bool              `json:"purge_data"`
 	Vars      map[string]string `json:"vars"`
+	Docker    *DockerOverride   `json:"docker,omitempty"` // 容器安装的端口/卷/ENV/重启策略覆盖
 }
 
 // RegisterRunnerTasks 把应用生命周期挂到后台任务运行器。
@@ -134,7 +135,7 @@ func (m *Manager) installTask(ctx context.Context, w io.Writer, t *store.Backgro
 	case "native":
 		return m.Install(ctx, w, p.NodeID, p.AppID, p.Vars)
 	case "docker":
-		return m.DockerInstall(ctx, w, p.NodeID, p.AppID, p.Vars)
+		return m.DockerInstall(ctx, w, p.NodeID, p.AppID, p.Vars, p.Docker)
 	default:
 		return fmt.Errorf("暂不支持 %s 安装方式", p.Method)
 	}
@@ -217,7 +218,7 @@ func (m *Manager) nativeReconcile(ctx context.Context, p *TaskPayload, isInstall
 			if err := m.store.UpsertInstallation(&store.AppInstallation{
 				NodeID: p.NodeID, AppID: p.AppID, Method: "native",
 				Status: "installed", ServiceName: unit,
-				Params: paramsJSON(p.Vars),
+				Params: paramsJSON(p.Vars, nil),
 			}); err != nil {
 				return runner.Decision{Status: store.TaskFailure,
 					Error: "补建安装记录失败: " + err.Error()}, nil
@@ -273,7 +274,7 @@ func (m *Manager) dockerReconcile(ctx context.Context, p *TaskPayload, isInstall
 			if err := m.store.UpsertInstallation(&store.AppInstallation{
 				NodeID: p.NodeID, AppID: p.AppID, Method: "docker",
 				Status: "installed", ContainerID: cid, ContainerName: cname,
-				Params: paramsJSON(p.Vars),
+				Params: paramsJSON(p.Vars, p.Docker),
 			}); err != nil {
 				return runner.Decision{Status: store.TaskFailure,
 					Error: "补建安装记录失败: " + err.Error()}, nil

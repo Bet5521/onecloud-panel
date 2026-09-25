@@ -23,11 +23,14 @@ import (
 	"onecloud-panel/internal/auth"
 	"onecloud-panel/internal/config"
 	"onecloud-panel/internal/executor"
+	"onecloud-panel/internal/firewall"
 	"onecloud-panel/internal/node"
 	"onecloud-panel/internal/recipes"
 	"onecloud-panel/internal/runner"
+	"onecloud-panel/internal/scriptsvc"
 	"onecloud-panel/internal/secretbox"
 	"onecloud-panel/internal/self"
+	"onecloud-panel/internal/storage"
 	"onecloud-panel/internal/store"
 	"onecloud-panel/internal/system"
 	"onecloud-panel/internal/tlssniff"
@@ -76,6 +79,16 @@ func Run(cfg *config.Panel) error {
 		log.Printf("注册自定义应用配方失败: %v", err)
 	}
 
+	// SH 脚本管理：脚本落盘/自启/运行
+	scriptSvc := scriptsvc.New(s, appManager.ExecutorFor, asvc)
+	scriptSvc.RegisterRunnerTasks(taskRunner)
+
+	// 节点存储管理：SD 卡等块设备检测/挂载/fstab 自启
+	storageSvc := storage.New(appManager.ExecutorFor)
+
+	// 节点防火墙管理：ufw/firewalld/nftables/iptables 自适应
+	firewallSvc := firewall.New(appManager.ExecutorFor)
+
 	apiObj := api.New(s, authH, auth.NewMiddleware(sessions), asvc,
 		nodeSvc, recipeReg, taskRunner, appManager)
 
@@ -105,6 +118,9 @@ func Run(cfg *config.Panel) error {
 	}
 	apiObj.SetSelfService(selfSvc)
 	apiObj.SetSessionManager(sessions)
+	apiObj.SetScriptService(scriptSvc)
+	apiObj.SetStorageService(storageSvc)
+	apiObj.SetFirewallService(firewallSvc)
 	apiObj.RegisterSSHTasks(taskRunner)
 	apiHandler := apiObj.Handler()
 

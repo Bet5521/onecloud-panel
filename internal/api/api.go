@@ -6,10 +6,13 @@ import (
 	"onecloud-panel/internal/apps"
 	"onecloud-panel/internal/audit"
 	"onecloud-panel/internal/auth"
+	"onecloud-panel/internal/firewall"
 	"onecloud-panel/internal/node"
 	"onecloud-panel/internal/recipes"
 	"onecloud-panel/internal/runner"
+	"onecloud-panel/internal/scriptsvc"
 	"onecloud-panel/internal/self"
+	"onecloud-panel/internal/storage"
 	"onecloud-panel/internal/store"
 	"onecloud-panel/internal/version"
 )
@@ -24,6 +27,9 @@ type API struct {
 	recipes      *recipes.Registry
 	tasks        *runner.Runner
 	apps         *apps.Manager
+	scripts      *scriptsvc.Manager
+	storage      *storage.Manager
+	firewall     *firewall.Manager
 	selfSvc      *self.Service
 	sessions     *auth.Manager
 	releaseDir   string
@@ -47,6 +53,21 @@ func (a *API) SetResetCodeSink(f func(username, code string)) {
 // SetSelfService 注入面板自身管理服务。
 func (a *API) SetSelfService(s *self.Service) {
 	a.selfSvc = s
+}
+
+// SetScriptService 注入 SH 脚本管理服务。
+func (a *API) SetScriptService(s *scriptsvc.Manager) {
+	a.scripts = s
+}
+
+// SetStorageService 注入节点存储管理服务。
+func (a *API) SetStorageService(s *storage.Manager) {
+	a.storage = s
+}
+
+// SetFirewallService 注入节点防火墙管理服务。
+func (a *API) SetFirewallService(s *firewall.Manager) {
+	a.firewall = s
 }
 
 // SetSessionManager 注入会话管理器（初始化完成后自动登录）。
@@ -126,6 +147,24 @@ func (a *API) Handler() http.Handler {
 		auth.RequirePermission(store.PermNodeWrite, http.HandlerFunc(a.updateNodeDockerConfig))))
 	mux.Handle("POST /api/nodes/{id}/docker/apply-config", a.mw.RequireAuth(
 		auth.RequirePermission(store.PermNodeWrite, http.HandlerFunc(a.applyNodeDockerConfig))))
+	mux.Handle("GET /api/nodes/{id}/storage/devices", a.mw.RequireAuth(
+		auth.RequirePermission(store.PermNodeRead, http.HandlerFunc(a.nodeStorageDevices))))
+	mux.Handle("POST /api/nodes/{id}/storage/mount", a.mw.RequireAuth(
+		auth.RequirePermission(store.PermNodeWrite, http.HandlerFunc(a.nodeStorageMount))))
+	mux.Handle("POST /api/nodes/{id}/storage/unmount", a.mw.RequireAuth(
+		auth.RequirePermission(store.PermNodeWrite, http.HandlerFunc(a.nodeStorageUnmount))))
+	mux.Handle("POST /api/nodes/{id}/storage/autostart", a.mw.RequireAuth(
+		auth.RequirePermission(store.PermNodeWrite, http.HandlerFunc(a.nodeStorageAutostart))))
+	mux.Handle("GET /api/nodes/{id}/terminal", a.mw.RequireAuth(
+		auth.RequirePermission(store.PermNodeWrite, http.HandlerFunc(a.nodeTerminal))))
+	mux.Handle("GET /api/nodes/{id}/firewall", a.mw.RequireAuth(
+		auth.RequirePermission(store.PermNodeRead, http.HandlerFunc(a.nodeFirewallStatus))))
+	mux.Handle("POST /api/nodes/{id}/firewall/rules", a.mw.RequireAuth(
+		auth.RequirePermission(store.PermNodeWrite, http.HandlerFunc(a.nodeFirewallAddRule))))
+	mux.Handle("POST /api/nodes/{id}/firewall/rules/remove", a.mw.RequireAuth(
+		auth.RequirePermission(store.PermNodeWrite, http.HandlerFunc(a.nodeFirewallRemoveRule))))
+	mux.Handle("POST /api/nodes/{id}/firewall/toggle", a.mw.RequireAuth(
+		auth.RequirePermission(store.PermNodeWrite, http.HandlerFunc(a.nodeFirewallToggle))))
 	mux.Handle("GET /api/network-suggest", a.mw.RequireAuth(
 		auth.RequirePermission(store.PermNodeRead, http.HandlerFunc(a.suggestNetwork))))
 	mux.Handle("GET /api/registration-tokens", a.mw.RequireAuth(
@@ -263,6 +302,24 @@ func (a *API) Handler() http.Handler {
 		auth.RequirePermission(store.PermAppWrite, http.HandlerFunc(a.deleteCustomApp))))
 	mux.Handle("POST /api/custom-apps/{id}/binary", a.mw.RequireAuth(
 		auth.RequirePermission(store.PermAppWrite, http.HandlerFunc(a.uploadCustomBinary))))
+
+	// ---- SH 脚本管理（应用管理「脚本」页签） ----
+	mux.Handle("GET /api/scripts", a.mw.RequireAuth(
+		auth.RequirePermission(store.PermAppRead, http.HandlerFunc(a.listScripts))))
+	mux.Handle("POST /api/scripts", a.mw.RequireAuth(
+		auth.RequirePermission(store.PermAppWrite, http.HandlerFunc(a.createScript))))
+	mux.Handle("GET /api/scripts/{id}", a.mw.RequireAuth(
+		auth.RequirePermission(store.PermAppRead, http.HandlerFunc(a.getScript))))
+	mux.Handle("PUT /api/scripts/{id}", a.mw.RequireAuth(
+		auth.RequirePermission(store.PermAppWrite, http.HandlerFunc(a.updateScript))))
+	mux.Handle("DELETE /api/scripts/{id}", a.mw.RequireAuth(
+		auth.RequirePermission(store.PermAppWrite, http.HandlerFunc(a.deleteScript))))
+	mux.Handle("GET /api/scripts/{id}/deployments", a.mw.RequireAuth(
+		auth.RequirePermission(store.PermAppRead, http.HandlerFunc(a.listScriptDeployments))))
+	mux.Handle("POST /api/scripts/{id}/deploy", a.mw.RequireAuth(
+		auth.RequirePermission(store.PermAppWrite, http.HandlerFunc(a.deployScript))))
+	mux.Handle("POST /api/scripts/{id}/run", a.mw.RequireAuth(
+		auth.RequirePermission(store.PermAppWrite, http.HandlerFunc(a.runScript))))
 
 	// ---- 后台任务 ----
 	mux.Handle("GET /api/tasks", a.mw.RequireAuth(

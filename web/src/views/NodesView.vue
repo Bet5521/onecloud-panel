@@ -161,10 +161,113 @@
           </el-table>
         </el-card>
 
+        <!-- 存储设备 -->
+        <el-card shadow="never" class="section">
+          <template #header>
+            <div class="card-head">
+              <span>存储设备</span>
+              <el-button text :loading="storageLoading" @click="loadStorage">刷新</el-button>
+            </div>
+          </template>
+          <div v-if="storageErr" class="muted">{{ storageErr }}</div>
+          <el-table v-else :data="storageDevices" size="small">
+            <el-table-column label="设备" min-width="160">
+              <template #default="{ row }">
+                <span class="mono">{{ row.path }}</span>
+                <el-tag v-if="row.removable" size="small" type="warning" effect="plain"
+                  style="margin-left:6px">可移除</el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column label="型号" min-width="110" show-overflow-tooltip>
+              <template #default="{ row }">{{ row.model || '-' }}</template>
+            </el-table-column>
+            <el-table-column label="大小" width="100">
+              <template #default="{ row }">{{ fmtBytes(row.size) }}</template>
+            </el-table-column>
+            <el-table-column label="文件系统" width="90">
+              <template #default="{ row }">{{ row.fstype || '-' }}</template>
+            </el-table-column>
+            <el-table-column label="挂载点" min-width="110" show-overflow-tooltip>
+              <template #default="{ row }">
+                <span :class="{ mono: row.mountpoint }">{{ row.mountpoint || '-' }}</span>
+              </template>
+            </el-table-column>
+            <el-table-column v-if="can('node:write')" label="操作" width="150" fixed="right">
+              <template #default="{ row }">
+                <el-button v-if="!row.mountpoint" link type="primary" :disabled="!row.fstype"
+                  @click="openMount(row)">挂载</el-button>
+                <el-button v-else link type="warning" @click="unmountDevice(row)">卸载</el-button>
+                <el-button link type="primary" :disabled="!row.fstype"
+                  @click="openAuto(row)">自启</el-button>
+              </template>
+            </el-table-column>
+          </el-table>
+          <div class="hint" style="margin-top:6px">自启将写入 /etc/fstab（nofail 模式，设备缺失不阻塞启动），修改前自动备份到 /etc/fstab.ocp.bak</div>
+        </el-card>
+
+        <!-- 防火墙 -->
+        <el-card shadow="never" class="section">
+          <template #header>
+            <div class="card-head">
+              <span>防火墙</span>
+              <el-button text :loading="fwLoading" @click="loadFirewall">刷新</el-button>
+            </div>
+          </template>
+          <div v-if="fwStatus">
+            <el-space wrap style="margin-bottom:10px">
+              <el-tag size="small" effect="plain">{{ fwBackendLabel() }}</el-tag>
+              <el-tag size="small" :type="fwStatus.active ? 'success' : 'info'" effect="plain">
+                {{ fwStatus.active ? '已启用' : '未启用' }}
+              </el-tag>
+              <el-button v-if="can('node:write') && fwToggleable()" size="small"
+                :type="fwStatus.active ? 'warning' : 'success'" plain
+                :loading="fwSubmitting" @click="toggleFirewall">
+                {{ fwStatus.active ? '关闭防火墙' : '开启防火墙' }}
+              </el-button>
+              <el-button v-if="can('node:write') && fwStatus.backend !== 'none'" size="small"
+                type="primary" plain @click="openFwRule">新增规则</el-button>
+            </el-space>
+            <el-table v-if="fwStatus.rules.length" :data="fwStatus.rules" size="small">
+              <el-table-column label="端口" width="140">
+                <template #default="{ row }"><span class="mono">{{ row.port }}</span></template>
+              </el-table-column>
+              <el-table-column label="协议" width="100">
+                <template #default="{ row }">{{ row.proto ? row.proto.toUpperCase() : 'TCP+UDP' }}</template>
+              </el-table-column>
+              <el-table-column label="动作" width="90">
+                <template #default="{ row }">
+                  <el-tag size="small" :type="row.action === 'allow' ? 'success' : 'danger'" effect="plain">
+                    {{ row.action === 'allow' ? '允许' : '拒绝' }}
+                  </el-tag>
+                </template>
+              </el-table-column>
+              <el-table-column label="来源" min-width="140">
+                <template #default="{ row }"><span class="mono">{{ row.source || '任意' }}</span></template>
+              </el-table-column>
+              <el-table-column v-if="can('node:write')" label="操作" width="80">
+                <template #default="{ row }">
+                  <el-button link type="danger" @click="removeFwRule(row)">删除</el-button>
+                </template>
+              </el-table-column>
+            </el-table>
+            <div v-else class="muted">未检测到端口规则</div>
+            <div v-if="fwStatus.backend === 'iptables'" class="hint" style="margin-top:6px">
+              当前为 iptables 运行时规则，节点重启后失效；如需持久化请通过节点终端手动保存。
+            </div>
+            <el-collapse v-if="fwStatus.detail" style="margin-top:6px">
+              <el-collapse-item title="原始状态输出">
+                <pre class="mono fw-detail">{{ fwStatus.detail }}</pre>
+              </el-collapse-item>
+            </el-collapse>
+          </div>
+          <div v-else class="muted">{{ fwErr || '加载中…' }}</div>
+        </el-card>
+
         <!-- 节点操作 -->
         <el-card v-if="can('node:write')" shadow="never" class="section">
           <template #header><span>节点操作</span></template>
           <el-space wrap>
+            <el-button type="primary" plain @click="openTerminal">打开终端</el-button>
             <el-button @click="rotateToken(cur)">轮换 Agent Token</el-button>
             <el-button v-if="!cur.docker_version && cur.online" type="primary" plain
               :loading="dockerInstalling" @click="installDocker(cur)">
@@ -326,13 +429,128 @@
       </template>
     </el-dialog>
 
+    <!-- 挂载设备 -->
+    <el-dialog v-model="mountVisible" title="挂载设备" width="480px" destroy-on-close>
+      <el-form label-width="90px">
+        <el-form-item label="设备">
+          <span class="mono">{{ mountForm.device }}</span>
+        </el-form-item>
+        <el-form-item label="挂载点">
+          <el-input v-model="mountForm.mountpoint" placeholder="/mnt/sd-xxx" />
+        </el-form-item>
+        <el-form-item label="开机自启">
+          <el-switch v-model="mountForm.auto_start" />
+          <span class="hint" style="margin-left:8px">写入 fstab，开机自动挂载该设备</span>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="mountVisible = false">取消</el-button>
+        <el-button type="primary" :loading="storageSubmitting" @click="submitMount">挂载</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 开机自启设置 -->
+    <el-dialog v-model="autoVisible" title="开机自动挂载" width="480px" destroy-on-close>
+      <el-form label-width="90px">
+        <el-form-item label="设备">
+          <span class="mono">{{ autoForm.device }}</span>
+        </el-form-item>
+        <el-form-item label="挂载点">
+          <el-input v-model="autoForm.mountpoint" placeholder="/mnt/sd-xxx" />
+        </el-form-item>
+        <el-form-item label="开机自启">
+          <el-switch v-model="autoForm.enabled" />
+          <span class="hint" style="margin-left:8px">{{ autoForm.enabled ? '开启：写入 fstab 开机自动挂载' : '关闭：移除 fstab 中的条目' }}</span>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="autoVisible = false">取消</el-button>
+        <el-button type="primary" :loading="storageSubmitting" @click="submitAuto">保存</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 防火墙新增规则 -->
+    <el-dialog v-model="fwRuleVisible" title="新增防火墙规则" width="480px" destroy-on-close>
+      <el-form label-width="90px">
+        <el-form-item label="端口">
+          <el-input v-model="fwForm.port" placeholder="80 或范围 50000:50100" style="width: 220px" />
+        </el-form-item>
+        <el-form-item label="协议">
+          <el-select v-model="fwForm.proto" style="width: 220px">
+            <el-option label="TCP+UDP" value="" />
+            <el-option label="TCP" value="tcp" />
+            <el-option label="UDP" value="udp" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="动作">
+          <el-radio-group v-model="fwForm.action">
+            <el-radio value="allow">允许</el-radio>
+            <el-radio value="deny">拒绝</el-radio>
+          </el-radio-group>
+        </el-form-item>
+        <el-form-item label="来源">
+          <el-input v-model="fwForm.source" placeholder="可选，IP 或 CIDR，如 10.0.0.0/8" style="width: 220px" />
+        </el-form-item>
+      </el-form>
+      <div class="hint">规则写入节点当前防火墙（UFW / Firewalld / nftables / iptables 自动适配）；TCP+UDP 协议将拆为两条规则。</div>
+      <template #footer>
+        <el-button @click="fwRuleVisible = false">取消</el-button>
+        <el-button type="primary" :loading="fwSubmitting" @click="submitFwRule">添加</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- SSH 终端 -->
+    <el-dialog v-model="termVisible" :title="'节点终端 · ' + (cur?.name || '')" width="820px"
+      destroy-on-close :close-on-click-modal="false" @close="closeTerminal">
+      <div v-if="termState === 'form'" class="term-form">
+        <el-form label-width="90px">
+          <el-form-item label="用户名">
+            <el-input v-model="termForm.user" placeholder="root" style="width: 220px" />
+          </el-form-item>
+          <el-form-item label="端口">
+            <el-input-number v-model="termForm.port" :min="1" :max="65535" controls-position="right"
+              style="width: 160px" />
+          </el-form-item>
+          <el-form-item label="密码">
+            <el-input v-model="termForm.password" type="password" show-password
+              placeholder="SSH 登录密码" @keyup.enter="connectTerminal" />
+          </el-form-item>
+          <el-form-item v-if="termForm.fingerprint" label="主机指纹">
+            <span class="mono">{{ termForm.fingerprint }}</span>
+            <el-button text type="primary" style="margin-left: 8px"
+              @click="termForm.fingerprint = ''">清除</el-button>
+          </el-form-item>
+        </el-form>
+        <div class="hint">密码仅用于本次 SSH 连接（浏览器与面板内存），不落库、不写日志；关闭终端即丢弃。</div>
+      </div>
+      <div v-else-if="termState === 'hostkey'" class="term-form">
+        <el-alert type="warning" :closable="false" show-icon
+          title="首次连接该节点，请核对 SSH 主机指纹" />
+        <p class="mono" style="text-align: center; font-size: 16px; margin: 14px 0">{{ termHostKey }}</p>
+        <div class="hint" style="text-align: center">
+          指纹与目标主机一致请点「确认并连接」；不一致请立即取消（可能存在中间人攻击）。
+        </div>
+      </div>
+      <div v-show="termState === 'term'" ref="termBox" class="term-box"></div>
+      <template #footer>
+        <el-button @click="termVisible = false">关闭</el-button>
+        <el-button v-if="termState === 'form'" type="primary" :loading="termConnecting"
+          @click="connectTerminal">连接</el-button>
+        <template v-else-if="termState === 'hostkey'">
+          <el-button @click="cancelHostKey">取消</el-button>
+          <el-button type="primary" @click="confirmHostKey">确认并连接</el-button>
+        </template>
+        <el-button v-else type="warning" plain @click="closeTerminalConn">断开</el-button>
+      </template>
+    </el-dialog>
+
     <TaskProgressDialog v-if="taskId" :task-id="taskId" :endpoint="taskEndpoint"
       :title="taskTitle" @close="taskId = null" @finished="onTaskFinished" />
   </div>
 </template>
 
 <script setup>
-import { ref } from 'vue'
+import { ref, nextTick } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { get, post, put, del, showErr } from '../api/http'
@@ -340,6 +558,9 @@ import { session } from '../session'
 const can = (p) => session.can(p)
 import { fmtTime, fmtAgo, fmtBytes } from '../utils'
 import TaskProgressDialog from '../components/TaskProgressDialog.vue'
+import { Terminal } from '@xterm/xterm'
+import { FitAddon } from '@xterm/addon-fit'
+import '@xterm/xterm/css/xterm.css'
 
 const router = useRouter()
 
@@ -395,6 +616,8 @@ async function openDetail(row) {
   liveErr.value = ''
   loadLive()
   loadInstallations()
+  loadStorage()
+  loadFirewall()
 }
 
 async function loadLive() {
@@ -422,6 +645,419 @@ async function loadInstallations() {
 function goApp(nodeID, appID) {
   drawer.value = false
   router.push(`/nodes/${nodeID}/apps/${appID}`)
+}
+
+// ---- 存储设备 ----
+const storageDevices = ref([])
+const storageLoading = ref(false)
+const storageErr = ref('')
+const storageSubmitting = ref(false)
+const mountVisible = ref(false)
+const autoVisible = ref(false)
+const mountForm = ref({ device: '', mountpoint: '', auto_start: false })
+const autoForm = ref({ device: '', mountpoint: '', enabled: true })
+
+async function loadStorage() {
+  if (!cur.value) return
+  storageLoading.value = true
+  try {
+    const d = await get('/api/nodes/' + cur.value.id + '/storage/devices')
+    storageDevices.value = Array.isArray(d.items) ? d.items : []
+    storageErr.value = ''
+  } catch (e) {
+    storageDevices.value = []
+    storageErr.value = e.message
+  } finally {
+    storageLoading.value = false
+  }
+}
+
+function openMount(row) {
+  mountForm.value = {
+    device: row.path,
+    mountpoint: '/mnt/sd-' + row.name.replace(/^\/dev\//, ''),
+    auto_start: false
+  }
+  mountVisible.value = true
+}
+
+async function submitMount() {
+  const f = mountForm.value
+  if (!f.mountpoint || !f.mountpoint.startsWith('/')) {
+    ElMessage.warning('请填写以 / 开头的挂载点')
+    return
+  }
+  storageSubmitting.value = true
+  try {
+    await post('/api/nodes/' + cur.value.id + '/storage/mount', {
+      device: f.device, mountpoint: f.mountpoint
+    })
+    ElMessage.success('挂载成功')
+    mountVisible.value = false
+    if (f.auto_start) {
+      await post('/api/nodes/' + cur.value.id + '/storage/autostart', {
+        device: f.device, mountpoint: f.mountpoint, enabled: true
+      })
+      ElMessage.success('已设置开机自动挂载')
+    }
+    loadStorage()
+  } catch (e) {
+    showErr(e, '操作失败')
+  } finally {
+    storageSubmitting.value = false
+  }
+}
+
+async function unmountDevice(row) {
+  try {
+    await ElMessageBox.confirm(
+      `确认卸载 ${row.path}（挂载点 ${row.mountpoint}）？请确保没有程序正在使用该设备。`, '卸载设备',
+      { type: 'warning' }
+    )
+  } catch {
+    return // 用户取消
+  }
+  try {
+    await post('/api/nodes/' + cur.value.id + '/storage/unmount', {
+      device: row.path, mountpoint: row.mountpoint
+    })
+    ElMessage.success('已卸载')
+    loadStorage()
+  } catch (e) {
+    showErr(e, '卸载失败')
+  }
+}
+
+function openAuto(row) {
+  autoForm.value = {
+    device: row.path,
+    mountpoint: row.mountpoint || '/mnt/sd-' + row.name.replace(/^\/dev\//, ''),
+    enabled: true
+  }
+  autoVisible.value = true
+}
+
+async function submitAuto() {
+  const f = autoForm.value
+  if (!f.mountpoint || !f.mountpoint.startsWith('/')) {
+    ElMessage.warning('请填写以 / 开头的挂载点')
+    return
+  }
+  storageSubmitting.value = true
+  try {
+    await post('/api/nodes/' + cur.value.id + '/storage/autostart', {
+      device: f.device, mountpoint: f.mountpoint, enabled: f.enabled
+    })
+    ElMessage.success(f.enabled ? '已设置开机自动挂载' : '已取消开机自动挂载')
+    autoVisible.value = false
+    loadStorage()
+  } catch (e) {
+    showErr(e, '设置失败')
+  } finally {
+    storageSubmitting.value = false
+  }
+}
+
+// ---- 防火墙 ----
+const fwStatus = ref(null)
+const fwLoading = ref(false)
+const fwErr = ref('')
+const fwSubmitting = ref(false)
+const fwRuleVisible = ref(false)
+const fwForm = ref({ port: '', proto: '', action: 'allow', source: '' })
+const fwBackendLabels = { ufw: 'UFW', firewalld: 'Firewalld', nftables: 'nftables', iptables: 'iptables', none: '未检测到' }
+
+function fwBackendLabel() {
+  return fwBackendLabels[fwStatus.value?.backend] || fwStatus.value?.backend || '-'
+}
+
+// 仅 ufw / firewalld 支持一键开关
+function fwToggleable() {
+  return ['ufw', 'firewalld'].includes(fwStatus.value?.backend)
+}
+
+async function loadFirewall() {
+  if (!cur.value) return
+  fwLoading.value = true
+  try {
+    fwStatus.value = await get('/api/nodes/' + cur.value.id + '/firewall')
+    fwErr.value = ''
+  } catch (e) {
+    fwStatus.value = null
+    fwErr.value = e.message
+  } finally {
+    fwLoading.value = false
+  }
+}
+
+async function toggleFirewall() {
+  const enable = !fwStatus.value.active
+  try {
+    await ElMessageBox.confirm(
+      enable
+        ? '确认开启该节点防火墙？若节点默认策略为拒绝，可能影响现有服务访问。'
+        : '确认关闭该节点防火墙？关闭后节点入站流量将不再过滤，请谨慎操作。',
+      '防火墙开关', { type: 'warning' }
+    )
+  } catch {
+    return // 用户取消
+  }
+  fwSubmitting.value = true
+  try {
+    await post('/api/nodes/' + cur.value.id + '/firewall/toggle', { enabled: enable })
+    ElMessage.success(enable ? '已开启' : '已关闭')
+    loadFirewall()
+  } catch (e) {
+    showErr(e, '操作失败')
+  } finally {
+    fwSubmitting.value = false
+  }
+}
+
+function openFwRule() {
+  fwForm.value = { port: '', proto: '', action: 'allow', source: '' }
+  fwRuleVisible.value = true
+}
+
+function validFwPort(p) {
+  if (!/^\d{1,5}(:\d{1,5})?$/.test(p)) return false
+  const parts = p.split(':').map(Number)
+  return parts.every((v) => v >= 1 && v <= 65535) && (parts.length < 2 || parts[0] <= parts[1])
+}
+
+async function submitFwRule() {
+  const f = fwForm.value
+  if (!validFwPort(f.port)) {
+    ElMessage.warning('端口格式无效（1-65535，范围示例 50000:50100）')
+    return
+  }
+  if (f.source && !/^[0-9a-fA-F.:]+(\/\d{1,3})?$/.test(f.source)) {
+    ElMessage.warning('来源格式无效（应为 IP 或 CIDR）')
+    return
+  }
+  fwSubmitting.value = true
+  try {
+    await post('/api/nodes/' + cur.value.id + '/firewall/rules', {
+      port: f.port, proto: f.proto, action: f.action, source: f.source
+    })
+    ElMessage.success('规则已添加')
+    fwRuleVisible.value = false
+    loadFirewall()
+  } catch (e) {
+    showErr(e, '添加失败')
+  } finally {
+    fwSubmitting.value = false
+  }
+}
+
+async function removeFwRule(row) {
+  try {
+    await ElMessageBox.confirm(
+      `确认删除规则：端口 ${row.port}${row.proto ? '/' + row.proto : ''}（${row.action === 'allow' ? '允许' : '拒绝'}${row.source ? '，来源 ' + row.source : ''}）？`,
+      '删除规则', { type: 'warning' }
+    )
+  } catch {
+    return // 用户取消
+  }
+  fwSubmitting.value = true
+  try {
+    await post('/api/nodes/' + cur.value.id + '/firewall/rules/remove', {
+      port: row.port, proto: row.proto, action: row.action, source: row.source
+    })
+    ElMessage.success('规则已删除')
+    loadFirewall()
+  } catch (e) {
+    showErr(e, '删除失败')
+  } finally {
+    fwSubmitting.value = false
+  }
+}
+
+// ---- SSH 终端 ----
+const termVisible = ref(false)
+const termState = ref('form') // form | hostkey | term
+const termConnecting = ref(false)
+const termHostKey = ref('')
+const termForm = ref({ user: 'root', port: 22, password: '', fingerprint: '' })
+const termBox = ref(null)
+let termWs = null
+let term = null
+let fitAddon = null
+let resizeObserver = null
+
+function openTerminal() {
+  termForm.value = { user: 'root', port: 22, password: '', fingerprint: '' }
+  termState.value = 'form'
+  termVisible.value = true
+}
+
+function bytesToB64(bytes) {
+  let bin = ''
+  const chunk = 0x8000
+  for (let i = 0; i < bytes.length; i += chunk) {
+    bin += String.fromCharCode(...bytes.subarray(i, i + chunk))
+  }
+  return btoa(bin)
+}
+
+function b64ToBytes(b64) {
+  const bin = atob(b64)
+  const u = new Uint8Array(bin.length)
+  for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i)
+  return u
+}
+
+function sendTerm(obj) {
+  if (termWs && termWs.readyState === WebSocket.OPEN) {
+    termWs.send(JSON.stringify(obj))
+  }
+}
+
+function connectTerminal() {
+  const f = termForm.value
+  if (!f.user) {
+    ElMessage.warning('请填写用户名')
+    return
+  }
+  if (!f.password) {
+    ElMessage.warning('请填写密码')
+    return
+  }
+  termConnecting.value = true
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws'
+  const ws = new WebSocket(`${proto}://${location.host}/api/nodes/${cur.value.id}/terminal`)
+  termWs = ws
+  ws.onopen = () => {
+    ws.send(JSON.stringify({
+      action: 'start', user: f.user, password: f.password,
+      port: f.port, host_key_fingerprint: f.fingerprint || ''
+    }))
+  }
+  ws.onmessage = (ev) => {
+    let msg
+    try { msg = JSON.parse(ev.data) } catch { return }
+    handleTermFrame(msg)
+  }
+  ws.onclose = () => {
+    termWs = null
+    termConnecting.value = false
+    if (termState.value === 'term') termState.value = 'form'
+  }
+}
+
+function handleTermFrame(msg) {
+  switch (msg.type) {
+    case 'hostkey':
+      termHostKey.value = msg.fingerprint
+      termState.value = 'hostkey'
+      termConnecting.value = false
+      break
+    case 'started':
+      termConnecting.value = false
+      initTerm()
+      termState.value = 'term'
+      nextTick(() => {
+        fitTerm()
+        term?.focus()
+      })
+      break
+    case 'output':
+      term?.write(b64ToBytes(msg.data))
+      break
+    case 'exit':
+      ElMessage.info('远端 Shell 已退出')
+      break
+    case 'error':
+      termConnecting.value = false
+      if (termState.value === 'term') {
+        term?.writeln(`\r\n\x1b[31m${msg.message || '连接错误'}\x1b[0m`)
+      } else {
+        ElMessage.error(msg.message || '终端连接失败')
+        termState.value = 'form'
+      }
+      break
+  }
+}
+
+function confirmHostKey() {
+  termForm.value.fingerprint = termHostKey.value
+  termState.value = 'form'
+  connectTerminal()
+}
+
+function cancelHostKey() {
+  closeTermWs()
+  termState.value = 'form'
+}
+
+function initTerm() {
+  if (term) {
+    term.dispose()
+    term = null
+  }
+  if (resizeObserver) {
+    resizeObserver.disconnect()
+    resizeObserver = null
+  }
+  term = new Terminal({
+    cursorBlink: true,
+    fontSize: 13,
+    fontFamily: "'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace",
+    theme: { background: '#14161a' },
+    scrollback: 5000
+  })
+  fitAddon = new FitAddon()
+  term.loadAddon(fitAddon)
+  term.open(termBox.value)
+  fitAddon.fit()
+  term.onData((d) => {
+    sendTerm({ type: 'input', data: bytesToB64(new TextEncoder().encode(d)) })
+  })
+  resizeObserver = new ResizeObserver(() => fitTerm())
+  resizeObserver.observe(termBox.value)
+}
+
+function fitTerm() {
+  if (!fitAddon || !term) return
+  try {
+    fitAddon.fit()
+    sendTerm({ type: 'resize', cols: term.cols, rows: term.rows })
+  } catch {
+    // 容器不可见时忽略
+  }
+}
+
+function closeTermWs() {
+  if (termWs) {
+    termWs.onclose = null
+    termWs.onmessage = null
+    termWs.close()
+    termWs = null
+  }
+}
+
+function teardownTerm() {
+  closeTermWs()
+  if (resizeObserver) {
+    resizeObserver.disconnect()
+    resizeObserver = null
+  }
+  if (term) {
+    term.dispose()
+    term = null
+  }
+  fitAddon = null
+}
+
+function closeTerminalConn() {
+  teardownTerm()
+  termState.value = 'form'
+}
+
+function closeTerminal() {
+  teardownTerm()
+  termState.value = 'form'
+  termHostKey.value = ''
 }
 
 function pct(used, total) {
@@ -690,6 +1326,31 @@ async function saveNetworkType() {
 .muted {
   color: #909399;
   font-size: 13px;
+}
+.hint {
+  color: #909399;
+  font-size: 12px;
+  line-height: 1.6;
+}
+.mono {
+  font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+  font-size: 13px;
+}
+.fw-detail {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 300px;
+  overflow: auto;
+}
+.term-form {
+  padding: 8px 4px;
+}
+.term-box {
+  height: 420px;
+  background: #14161a;
+  border-radius: 4px;
+  padding: 6px;
 }
 .water-row {
   display: flex;

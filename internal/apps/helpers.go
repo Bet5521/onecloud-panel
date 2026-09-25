@@ -21,21 +21,53 @@ func osMode(m uint32, def os.FileMode) os.FileMode {
 	return os.FileMode(m)
 }
 
-func paramsJSON(vars map[string]string) string {
-	b, err := json.Marshal(vars)
+// installParams 安装记录 Params 的持久化结构。无 Docker 覆盖时保持旧的扁平
+// vars JSON，便于旧数据/旧版本兼容。
+type installParams struct {
+	Vars   map[string]string `json:"vars,omitempty"`
+	Docker *DockerOverride   `json:"docker,omitempty"`
+}
+
+// paramsJSON 序列化安装参数（vars + 可选 Docker 覆盖）。
+func paramsJSON(vars map[string]string, ov *DockerOverride) string {
+	var b []byte
+	var err error
+	if ov == nil {
+		b, err = json.Marshal(vars)
+	} else {
+		b, err = json.Marshal(installParams{Vars: vars, Docker: ov})
+	}
 	if err != nil {
 		return "{}"
 	}
 	return string(b)
 }
 
-// installationVars 从安装记录 Params 回填安装时变量（状态/动作/卸载路径使用）。
+// installationVars 从安装记录 Params 回填安装时变量（状态/动作/卸载路径使用），
+// 兼容旧扁平 JSON 与新 {"vars":{...}} 结构。
 func installationVars(in *store.AppInstallation) map[string]string {
 	vars := map[string]string{}
-	if in != nil && in.Params != "" {
-		_ = json.Unmarshal([]byte(in.Params), &vars)
+	if in == nil || in.Params == "" {
+		return vars
 	}
+	var np installParams
+	if err := json.Unmarshal([]byte(in.Params), &np); err == nil && np.Vars != nil {
+		return np.Vars
+	}
+	_ = json.Unmarshal([]byte(in.Params), &vars)
 	return vars
+}
+
+// installationDocker 从安装记录 Params 回填 Docker 覆盖（旧记录返回 nil）。
+func installationDocker(in *store.AppInstallation) *DockerOverride {
+	if in == nil || in.Params == "" {
+		return nil
+	}
+	var np installParams
+	if err := json.Unmarshal([]byte(in.Params), &np); err == nil {
+		return np.Docker
+	}
+	return nil
 }
 
 func indentLines(s string) string {

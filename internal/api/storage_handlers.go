@@ -5,10 +5,13 @@ import (
 	"strconv"
 
 	"onecloud-panel/internal/audit"
+	"onecloud-panel/internal/storage"
 	"onecloud-panel/internal/store"
 )
 
 // GET /api/nodes/{id}/storage/devices — 块设备列表（磁盘/分区，含挂载状态）。
+// 默认仅返回「可操作」设备（USB 与 SD 卡）；?all=1 时额外返回系统盘/内置存储等
+// 不可操作设备（仅供查看，前端禁止对其发起写操作）。
 func (a *API) nodeStorageDevices(w http.ResponseWriter, r *http.Request) {
 	n, ok := a.scopedNode(w, r)
 	if !ok {
@@ -18,6 +21,16 @@ func (a *API) nodeStorageDevices(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "设备列表获取失败: "+err.Error())
 		return
+	}
+	showAll := r.URL.Query().Get("all") == "1"
+	if !showAll {
+		operable := make([]storage.Device, 0, len(devs))
+		for _, d := range devs {
+			if d.Operable {
+				operable = append(operable, d)
+			}
+		}
+		devs = operable
 	}
 	writeJSON(w, map[string]any{"items": devs})
 }
@@ -60,14 +73,14 @@ func (a *API) nodeStorageUnmount(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "请求格式错误")
 		return
 	}
-	if err := a.storage.Unmount(r.Context(), n, req.MountPoint); err != nil {
+	if err := a.storage.Unmount(r.Context(), n, req.Device, req.MountPoint); err != nil {
 		a.audit.Record(r, "node", "storage_unmount", "node", strconv.FormatInt(n.ID, 10), audit.ResultFailure,
-			audit.DetailJSON(map[string]any{"mountpoint": req.MountPoint, "error": err.Error()}))
+			audit.DetailJSON(map[string]any{"device": req.Device, "mountpoint": req.MountPoint, "error": err.Error()}))
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	a.audit.Record(r, "node", "storage_unmount", "node", strconv.FormatInt(n.ID, 10), audit.ResultSuccess,
-		audit.DetailJSON(map[string]any{"mountpoint": req.MountPoint}))
+		audit.DetailJSON(map[string]any{"device": req.Device, "mountpoint": req.MountPoint}))
 	writeJSON(w, map[string]string{"status": "ok"})
 }
 

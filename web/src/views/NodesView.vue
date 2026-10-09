@@ -166,53 +166,67 @@
           <template #header>
             <div class="card-head">
               <span>存储设备</span>
-              <el-button text :loading="storageLoading" @click="loadStorage">刷新</el-button>
+              <div style="display:flex;align-items:center;gap:14px">
+                <el-checkbox v-model="storageShowAll" @change="loadStorage">显示不可操作设备</el-checkbox>
+                <el-button text :loading="storageLoading" @click="loadStorage">刷新</el-button>
+              </div>
             </div>
           </template>
           <div v-if="storageErr" class="muted">{{ storageErr }}</div>
-          <el-table v-else :data="storageDevices" size="small">
-            <el-table-column label="设备" min-width="160">
-              <template #default="{ row }">
-                <span class="mono">{{ row.path }}</span>
-                <el-tag v-if="row.removable" size="small" type="warning" effect="plain"
-                  style="margin-left:6px">可移除</el-tag>
-                <el-tag v-if="row.system" size="small" type="danger" effect="plain"
-                  style="margin-left:6px">系统盘</el-tag>
-              </template>
-            </el-table-column>
-            <el-table-column label="型号" min-width="110" show-overflow-tooltip>
-              <template #default="{ row }">{{ row.model || '-' }}</template>
-            </el-table-column>
-            <el-table-column label="大小" width="100">
-              <template #default="{ row }">{{ fmtBytes(row.size) }}</template>
-            </el-table-column>
-            <el-table-column label="文件系统" width="90">
-              <template #default="{ row }">{{ row.fstype || '-' }}</template>
-            </el-table-column>
-            <el-table-column label="卷标" min-width="90" show-overflow-tooltip>
-              <template #default="{ row }">{{ row.label || '-' }}</template>
-            </el-table-column>
-            <el-table-column label="挂载点" min-width="110" show-overflow-tooltip>
-              <template #default="{ row }">
-                <span :class="{ mono: row.mountpoint }">{{ row.mountpoint || '-' }}</span>
-              </template>
-            </el-table-column>
-            <el-table-column v-if="can('node:write')" label="操作" width="250" fixed="right">
-              <template #default="{ row }">
-                <el-button v-if="!row.mountpoint" link type="primary" :disabled="!row.fstype"
-                  @click="openMount(row)">挂载</el-button>
-                <el-button v-else link type="warning" @click="unmountDevice(row)">卸载</el-button>
-                <el-button link type="primary" :disabled="!row.fstype"
-                  @click="openAuto(row)">自启</el-button>
-                <el-button link type="success" :disabled="row.system"
-                  @click="openFormat(row)">格式化</el-button>
-                <el-button link type="success" :disabled="row.system || row.type !== 'disk'"
-                  @click="openPartition(row)">分区</el-button>
-              </template>
-            </el-table-column>
-          </el-table>
-          <div class="hint" style="margin-top:6px">自启将写入 /etc/fstab（nofail 模式，设备缺失不阻塞启动），修改前自动备份到 /etc/fstab.ocp.bak</div>
-          <div class="hint" style="margin-top:4px">格式化与分区仅对非系统盘可用；系统盘及其分区已自动禁用按钮，以防误删数据。</div>
+          <template v-else>
+            <el-table :data="storageDevices" size="small">
+              <el-table-column label="设备" min-width="180">
+                <template #default="{ row }">
+                  <span class="mono">{{ row.path }}</span>
+                  <el-tag size="small" :type="kindTag(row).type" effect="plain"
+                    style="margin-left:6px">{{ kindTag(row).label }}</el-tag>
+                  <el-tag v-if="row.read_only" size="small" type="info" effect="plain"
+                    style="margin-left:4px">只读</el-tag>
+                </template>
+              </el-table-column>
+              <el-table-column label="型号" min-width="110" show-overflow-tooltip>
+                <template #default="{ row }">{{ row.model || '-' }}</template>
+              </el-table-column>
+              <el-table-column label="大小" width="100">
+                <template #default="{ row }">{{ fmtBytes(row.size) }}</template>
+              </el-table-column>
+              <el-table-column label="文件系统" width="90">
+                <template #default="{ row }">{{ row.fstype || '-' }}</template>
+              </el-table-column>
+              <el-table-column label="卷标" min-width="90" show-overflow-tooltip>
+                <template #default="{ row }">{{ row.label || '-' }}</template>
+              </el-table-column>
+              <el-table-column label="挂载点" min-width="110" show-overflow-tooltip>
+                <template #default="{ row }">
+                  <span :class="{ mono: row.mountpoint }">{{ row.mountpoint || '-' }}</span>
+                </template>
+              </el-table-column>
+              <el-table-column v-if="can('node:write')" label="操作" width="300" fixed="right">
+                <template #default="{ row }">
+                  <template v-if="row.operable">
+                    <el-button v-if="!row.mountpoint" link type="primary" :disabled="!row.fstype"
+                      @click="openMount(row)">挂载</el-button>
+                    <el-button v-else link type="warning" @click="unmountDevice(row)">卸载</el-button>
+                    <el-button link type="primary" :disabled="!row.fstype"
+                      @click="openAuto(row)">自启</el-button>
+                    <el-button link type="success" @click="openFormat(row)">格式化</el-button>
+                    <el-button link type="success" :disabled="row.type !== 'disk'"
+                      @click="openPartition(row)">分区</el-button>
+                  </template>
+                  <span v-else class="muted">不可操作</span>
+                </template>
+              </el-table-column>
+            </el-table>
+            <el-empty v-if="!storageDevices.length && !storageLoading"
+              description="未检测到可操作的 USB 设备或 SD 卡" :image-size="60" />
+          </template>
+          <div class="hint" style="margin-top:6px">
+            安全策略：仅 <b>USB 设备</b> 与 <b>SD 卡</b> 支持挂载/卸载/自启/格式化/分区；
+            RAM 盘、系统盘、系统分区与启动分区默认隐藏并禁止一切写操作。
+          </div>
+          <div class="hint" style="margin-top:4px">
+            自启将写入 /etc/fstab（nofail 模式，设备缺失不阻塞启动），修改前自动备份到 /etc/fstab.ocp.bak。
+          </div>
         </el-card>
 
         <!-- 防火墙 -->
@@ -486,8 +500,8 @@
       <el-form label-width="90px">
         <el-form-item label="设备">
           <span class="mono">{{ formatTarget.path }}</span>
-          <el-tag v-if="formatTarget.system" size="small" type="danger" effect="plain"
-            style="margin-left:6px">系统盘</el-tag>
+          <el-tag size="small" :type="kindTag(formatTarget).type" effect="plain"
+            style="margin-left:6px">{{ kindTag(formatTarget).label }}</el-tag>
         </el-form-item>
         <el-form-item label="文件系统">
           <el-select v-model="formatForm.fstype" style="width:100%">
@@ -501,6 +515,7 @@
           <el-input v-model="formatForm.label" placeholder="可选，如 SD-CARD" maxlength="32" />
         </el-form-item>
       </el-form>
+      <div class="hint">仅 USB 设备与 SD 卡可格式化；后端会再次校验设备类型与系统盘，非可操作设备将被拒绝。</div>
       <template #footer>
         <el-button @click="formatVisible = false">取消</el-button>
         <el-button type="danger" :loading="storageSubmitting" @click="submitFormat">格式化</el-button>
@@ -522,6 +537,7 @@
           </el-select>
         </el-form-item>
       </el-form>
+      <div class="hint">仅 USB 设备与 SD 卡可重新分区；分区将对整盘重建分区表，请先确认设备类型。</div>
       <template #footer>
         <el-button @click="partitionVisible = false">取消</el-button>
         <el-button type="danger" :loading="storageSubmitting" @click="submitPartition">重新分区</el-button>
@@ -560,7 +576,7 @@
 
     <!-- SSH 终端 -->
     <el-dialog v-model="termVisible" :title="'节点终端 · ' + (cur?.name || '')" width="820px"
-      destroy-on-close :close-on-click-modal="false" @close="closeTerminal">
+      destroy-on-close :close-on-click-modal="false" @opened="onTermOpened" @close="closeTerminal">
       <div v-if="termState === 'form'" class="term-form">
         <el-form label-width="90px">
           <el-form-item label="用户名">
@@ -711,16 +727,29 @@ const storageDevices = ref([])
 const storageLoading = ref(false)
 const storageErr = ref('')
 const storageSubmitting = ref(false)
+const storageShowAll = ref(false)
 const mountVisible = ref(false)
 const autoVisible = ref(false)
 const mountForm = ref({ device: '', mountpoint: '', auto_start: false })
 const autoForm = ref({ device: '', mountpoint: '', enabled: true })
 
+// 设备类型标签：仅 USB 与 SD 卡可操作，其余仅供查看。
+function kindTag(row) {
+  switch (row.kind) {
+    case 'usb': return { label: 'USB', type: 'success' }
+    case 'sd': return { label: 'SD 卡', type: 'success' }
+    case 'system': return { label: '系统盘', type: 'danger' }
+    case 'internal': return { label: '内置存储', type: 'info' }
+    default: return { label: '未知', type: 'info' }
+  }
+}
+
 async function loadStorage() {
   if (!cur.value) return
   storageLoading.value = true
   try {
-    const d = await get('/api/nodes/' + cur.value.id + '/storage/devices')
+    const q = storageShowAll.value ? '?all=1' : ''
+    const d = await get('/api/nodes/' + cur.value.id + '/storage/devices' + q)
     storageDevices.value = Array.isArray(d.items) ? d.items : []
     storageErr.value = ''
   } catch (e) {
@@ -731,7 +760,15 @@ async function loadStorage() {
   }
 }
 
+// assertOperable 前端预校验：仅 USB / SD 卡可执行写操作。
+function assertOperable(row) {
+  if (row && row.operable) return true
+  ElMessage.warning('仅 USB 设备与 SD 卡支持该操作')
+  return false
+}
+
 function openMount(row) {
+  if (!assertOperable(row)) return
   mountForm.value = {
     device: row.path,
     mountpoint: '/mnt/sd-' + row.name.replace(/^\/dev\//, ''),
@@ -768,6 +805,7 @@ async function submitMount() {
 }
 
 async function unmountDevice(row) {
+  if (!assertOperable(row)) return
   try {
     await ElMessageBox.confirm(
       `确认卸载 ${row.path}（挂载点 ${row.mountpoint}）？请确保没有程序正在使用该设备。`, '卸载设备',
@@ -788,6 +826,7 @@ async function unmountDevice(row) {
 }
 
 function openAuto(row) {
+  if (!assertOperable(row)) return
   autoForm.value = {
     device: row.path,
     mountpoint: row.mountpoint || '/mnt/sd-' + row.name.replace(/^\/dev\//, ''),
@@ -826,10 +865,7 @@ const formatForm = ref({ fstype: 'ext4', label: '' })
 const partitionForm = ref({ scheme: 'gpt' })
 
 function openFormat(row) {
-  if (row.system) {
-    ElMessage.warning('系统盘禁止格式化')
-    return
-  }
+  if (!assertOperable(row)) return
   formatTarget.value = row
   formatForm.value = { fstype: 'ext4', label: row.label || '' }
   formatVisible.value = true
@@ -862,10 +898,7 @@ async function submitFormat() {
 }
 
 function openPartition(row) {
-  if (row.system) {
-    ElMessage.warning('系统盘禁止重新分区')
-    return
-  }
+  if (!assertOperable(row)) return
   if (row.type !== 'disk') {
     ElMessage.warning('分区只能对整个磁盘操作（如 /dev/sdb），请选择磁盘本身而非其分区')
     return
@@ -1027,6 +1060,12 @@ let termWs = null
 let term = null
 let fitAddon = null
 let resizeObserver = null
+// 记录最近一次实际下发的终端尺寸，避免重复/抖动下发 resize 触发远端反复重排。
+let lastCols = 0
+let lastRows = 0
+// start 帧携带的初始尺寸（PTY 以非零尺寸打开，规避 0×0 导致的换行异常）。
+let termCols = 80
+let termRows = 24
 
 function openTerminal() {
   termForm.value = { user: 'root', port: 22, password: '', fingerprint: '' }
@@ -1073,7 +1112,8 @@ function connectTerminal() {
   ws.onopen = () => {
     ws.send(JSON.stringify({
       action: 'start', user: f.user, password: f.password,
-      port: f.port, host_key_fingerprint: f.fingerprint || ''
+      port: f.port, host_key_fingerprint: f.fingerprint || '',
+      cols: termCols, rows: termRows
     }))
   }
   ws.onmessage = (ev) => {
@@ -1097,9 +1137,12 @@ function handleTermFrame(msg) {
       break
     case 'started':
       termConnecting.value = false
-      initTerm()
+      // 关键：先切换为可见状态再初始化 xterm。
+      // 若在 display:none 的容器上初始化，FitAddon 会按 0 宽度算出极小列数，
+      // 使远端 PTY 认为终端很窄，输入时被强制换行。
       termState.value = 'term'
       nextTick(() => {
+        initTerm()
         fitTerm()
         term?.focus()
       })
@@ -1134,6 +1177,7 @@ function cancelHostKey() {
 }
 
 function initTerm() {
+  if (!termBox.value) return
   if (term) {
     term.dispose()
     term = null
@@ -1142,6 +1186,8 @@ function initTerm() {
     resizeObserver.disconnect()
     resizeObserver = null
   }
+  lastCols = 0
+  lastRows = 0
   term = new Terminal({
     cursorBlink: true,
     fontSize: 13,
@@ -1152,7 +1198,12 @@ function initTerm() {
   fitAddon = new FitAddon()
   term.loadAddon(fitAddon)
   term.open(termBox.value)
-  fitAddon.fit()
+  // 容器此刻已可见，可直接按真实宽度计算尺寸；失败则退回 80×24。
+  if (!fitTerm()) {
+    term.resize(80, 24)
+    termCols = 80
+    termRows = 24
+  }
   term.onData((d) => {
     sendTerm({ type: 'input', data: bytesToB64(new TextEncoder().encode(d)) })
   })
@@ -1160,14 +1211,34 @@ function initTerm() {
   resizeObserver.observe(termBox.value)
 }
 
+// fitTerm 重新计算终端尺寸并（仅在变化时）下发 resize。
+// 返回是否成功 fit；容器不可见或尺寸为 0 时返回 false。
 function fitTerm() {
-  if (!fitAddon || !term) return
+  if (!fitAddon || !term || !termBox.value) return false
+  if (termBox.value.clientWidth === 0 || termBox.value.clientHeight === 0) return false
   try {
     fitAddon.fit()
-    sendTerm({ type: 'resize', cols: term.cols, rows: term.rows })
   } catch {
-    // 容器不可见时忽略
+    return false
   }
+  termCols = term.cols
+  termRows = term.rows
+  // 幂等下发：尺寸未变化时不下发，避免远端 shell 反复重排造成输入错行。
+  if (term.cols !== lastCols || term.rows !== lastRows) {
+    lastCols = term.cols
+    lastRows = term.rows
+    sendTerm({ type: 'resize', cols: term.cols, rows: term.rows })
+  }
+  return true
+}
+
+// onTermOpened 对话框展开动画结束后再 fit 一次，确保拿到最终宽度。
+function onTermOpened() {
+  if (termState.value !== 'term') return
+  nextTick(() => {
+    fitTerm()
+    term?.focus()
+  })
 }
 
 function closeTermWs() {
@@ -1490,10 +1561,18 @@ async function saveNetworkType() {
   padding: 8px 4px;
 }
 .term-box {
+  /* 固定高度 + 撑满宽度，宽度随对话框自适应（FitAddon 依此计算列数） */
   height: 420px;
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  overflow: hidden;
   background: #14161a;
   border-radius: 4px;
   padding: 6px;
+}
+.term-box .xterm {
+  height: 100%;
 }
 .water-row {
   display: flex;

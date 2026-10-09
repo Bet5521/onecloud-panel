@@ -32,13 +32,105 @@ func TestParseLsblk(t *testing.T) {
 
 // parseAndFilter 与 List 内部逻辑一致的辅助（供测试）。
 func parseAndFilter(out string) ([]Device, error) {
-	var outDevs []Device
-	for _, d := range parseLsblk(out) {
-		if d.Type == "disk" || d.Type == "part" {
-			outDevs = append(outDevs, d)
+	return filterBlockDevices(parseLsblk(out)), nil
+}
+
+// TestClassifyDevices 校验设备分类：仅 USB 与 SD 卡可操作，
+// 系统盘/启动分区/内置盘/RAM/loop 一律不可操作。
+func TestClassifyDevices(t *testing.T) {
+	out := strings.Join([]string{
+		`NAME="ram0" PATH="/dev/ram0" SIZE="8388608" TYPE="disk" FSTYPE="" MOUNTPOINT="" RO="0" RM="0" HOTPLUG="0" MODEL="" LABEL="" TRAN="" PKNAME=""`,
+		`NAME="zram0" PATH="/dev/zram0" SIZE="1073741824" TYPE="disk" FSTYPE="" MOUNTPOINT="" RO="0" RM="0" HOTPLUG="0" MODEL="" LABEL="" TRAN="" PKNAME=""`,
+		`NAME="loop0" PATH="/dev/loop0" SIZE="1024" TYPE="loop" FSTYPE="squashfs" MOUNTPOINT="/snap" RO="1" RM="0" HOTPLUG="0" MODEL="" LABEL="" TRAN="" PKNAME=""`,
+		`NAME="mmcblk0" PATH="/dev/mmcblk0" SIZE="7818182656" TYPE="disk" FSTYPE="" MOUNTPOINT="" RO="0" RM="0" HOTPLUG="0" MODEL="eMMC" LABEL="" TRAN="mmc" PKNAME=""`,
+		`NAME="mmcblk0boot0" PATH="/dev/mmcblk0boot0" SIZE="4194304" TYPE="disk" FSTYPE="" MOUNTPOINT="" RO="1" RM="0" HOTPLUG="0" MODEL="" LABEL="" TRAN="mmc" PKNAME="mmcblk0"`,
+		`NAME="mmcblk0p1" PATH="/dev/mmcblk0p1" SIZE="7340032000" TYPE="part" FSTYPE="ext4" MOUNTPOINT="/" RO="0" RM="0" HOTPLUG="0" MODEL="" LABEL="root" TRAN="" PKNAME="mmcblk0"`,
+		`NAME="mmcblk1" PATH="/dev/mmcblk1" SIZE="31267481600" TYPE="disk" FSTYPE="" MOUNTPOINT="" RO="0" RM="1" HOTPLUG="1" MODEL="SD128" LABEL="" TRAN="mmc" PKNAME=""`,
+		`NAME="mmcblk1p1" PATH="/dev/mmcblk1p1" SIZE="31267459072" TYPE="part" FSTYPE="ext4" MOUNTPOINT="/mnt/sd" RO="0" RM="1" HOTPLUG="1" MODEL="" LABEL="SDCARD" TRAN="" PKNAME="mmcblk1"`,
+		`NAME="sda" PATH="/dev/sda" SIZE="80026361856" TYPE="disk" FSTYPE="" MOUNTPOINT="" RO="0" RM="1" HOTPLUG="1" MODEL="USB DISK" LABEL="" TRAN="usb" PKNAME=""`,
+		`NAME="sda1" PATH="/dev/sda1" SIZE="80025218048" TYPE="part" FSTYPE="vfat" MOUNTPOINT="" RO="0" RM="1" HOTPLUG="1" MODEL="" LABEL="UDISK" TRAN="" PKNAME="sda"`,
+		`NAME="nvme0n1" PATH="/dev/nvme0n1" SIZE="512110190592" TYPE="disk" FSTYPE="" MOUNTPOINT="" RO="0" RM="0" HOTPLUG="0" MODEL="NVMe" LABEL="" TRAN="nvme" PKNAME=""`,
+		`NAME="sdb" PATH="/dev/sdb" SIZE="16000000000" TYPE="disk" FSTYPE="" MOUNTPOINT="" RO="0" RM="1" HOTPLUG="1" MODEL="USB Bridge" LABEL="" TRAN="" PKNAME=""`,
+		`NAME="mmcblk2" PATH="/dev/mmcblk2" SIZE="32000000000" TYPE="disk" FSTYPE="" MOUNTPOINT="" RO="0" RM="0" HOTPLUG="0" MODEL="SDCARD" LABEL="" TRAN="mmc" PKNAME=""`,
+	}, "\n")
+
+	devs := filterBlockDevices(parseLsblk(out))
+	// ram / zram / loop / boot 分区应被整体剔除
+	for _, name := range []string{"ram0", "zram0", "loop0", "mmcblk0boot0"} {
+		for _, d := range devs {
+			if d.Name == name {
+				t.Fatalf("%s 应被剔除，但仍在列表中: %+v", name, d)
+			}
 		}
 	}
-	return outDevs, nil
+
+	classifyDevices(devs, "/dev/mmcblk0", true)
+	idx := map[string]Device{}
+	for _, d := range devs {
+		idx[d.Name] = d
+	}
+
+	cases := []struct {
+		name     string
+		kind     string
+		system   bool
+		operable bool
+	}{
+		{"mmcblk0", kindSystem, true, false},    // 系统盘（eMMC）
+		{"mmcblk0p1", kindSystem, true, false},  // 系统根分区
+		{"mmcblk1", kindSD, false, true},        // SD 卡
+		{"mmcblk1p1", kindSD, false, true},      // SD 卡分区
+		{"sda", kindUSB, false, true},           // USB 设备
+		{"sda1", kindUSB, false, true},          // USB 分区
+		{"nvme0n1", kindInternal, false, false}, // 内置 NVMe
+		{"sdb", kindUSB, false, true},           // 未上报 TRAN 的 USB（可移除+热插拔兜底）
+		{"mmcblk2", kindSD, false, true},        // 未上报 RM 的次级 MMC（SD 卡槽兜底）
+	}
+	for _, c := range cases {
+		d, ok := idx[c.name]
+		if !ok {
+			t.Fatalf("%s 不在列表中", c.name)
+		}
+		if d.Kind != c.kind || d.System != c.system || d.Operable != c.operable {
+			t.Fatalf("%s: got kind=%s system=%v operable=%v; want kind=%s system=%v operable=%v",
+				c.name, d.Kind, d.System, d.Operable, c.kind, c.system, c.operable)
+		}
+	}
+
+	// 系统盘识别失败时，一切设备均不可操作。
+	devs2 := filterBlockDevices(parseLsblk(out))
+	classifyDevices(devs2, "", false)
+	for _, d := range devs2 {
+		if d.Operable {
+			t.Fatalf("系统盘未知时 %s 不应可操作", d.Name)
+		}
+	}
+}
+
+func TestMMCDiskIndex(t *testing.T) {
+	for _, yes := range []string{"mmcblk1", "mmcblk2", "mmcblk10"} {
+		if !mmcDiskIndexAtLeast1(yes) {
+			t.Fatalf("%s 应判定为次级 MMC 控制器", yes)
+		}
+	}
+	for _, no := range []string{"mmcblk0", "sda", "nvme0n1", "mmcblk"} {
+		if mmcDiskIndexAtLeast1(no) {
+			t.Fatalf("%s 不应判定为次级 MMC 控制器", no)
+		}
+	}
+}
+
+func TestParseLsblkTransport(t *testing.T) {
+	out := `NAME="sda" PATH="/dev/sda" SIZE="100" TYPE="disk" FSTYPE="" MOUNTPOINT="" RO="0" RM="1" HOTPLUG="1" MODEL="U" LABEL="" TRAN="usb" PKNAME=""`
+	devs := parseLsblk(out)
+	if len(devs) != 1 || devs[0].Transport != "usb" {
+		t.Fatalf("TRAN 解析失败: %+v", devs)
+	}
+	out2 := `NAME="mmcblk1p1" PATH="/dev/mmcblk1p1" SIZE="100" TYPE="part" FSTYPE="ext4" MOUNTPOINT="" RO="0" RM="1" HOTPLUG="1" MODEL="" LABEL="" TRAN="" PKNAME="mmcblk1"`
+	devs2 := parseLsblk(out2)
+	if len(devs2) != 1 || devs2[0].Parent != "mmcblk1" {
+		t.Fatalf("PKNAME 解析失败: %+v", devs2)
+	}
 }
 
 func TestUpdateFstab(t *testing.T) {

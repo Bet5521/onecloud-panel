@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"onecloud-panel/internal/executor"
@@ -30,7 +31,36 @@ type Device struct {
 	Model      string `json:"model"`      // 型号（部分设备为空）
 	ReadOnly   bool   `json:"read_only"`  // 只读（RO=1，如写保护 SD 卡）
 	Label      string `json:"label"`      // 卷标（LABEL）
-	System     bool   `json:"system"`     // 系统盘/系统分区（禁止格式化与重新分区）
+	Transport  string `json:"transport"`  // 传输总线：usb / mmc / sata / nvme / ...
+	Parent     string `json:"parent"`     // 所属磁盘内核名（分区非空）
+	System     bool   `json:"system"`     // 系统盘 / 系统分区 / 启动分区
+	Kind       string `json:"kind"`       // usb / sd / system / internal / unknown
+	Operable   bool   `json:"operable"`   // 是否允许挂载/格式化/分区（仅 USB 与 SD 卡）
+}
+
+// 设备类型（Kind）取值。
+const (
+	kindUSB      = "usb"      // USB 存储设备
+	kindSD       = "sd"       // SD / TF 卡（可移除 mmc）
+	kindSystem   = "system"   // 系统盘 / 系统分区 / 启动分区
+	kindInternal = "internal" // 内置非系统存储（eMMC、SATA、NVMe 等）
+	kindUnknown  = "unknown"  // 无法识别系统盘时的兜底（一律不可操作）
+)
+
+// KindLabel 返回设备类型的中文说明。
+func KindLabel(kind string) string {
+	switch kind {
+	case kindUSB:
+		return "USB 设备"
+	case kindSD:
+		return "SD 卡"
+	case kindSystem:
+		return "系统盘/启动分区"
+	case kindInternal:
+		return "内置存储"
+	default:
+		return "未知设备"
+	}
 }
 
 // Manager 存储管理入口。
@@ -43,36 +73,130 @@ func New(execFor func(*store.Node) (executor.Executor, error)) *Manager {
 	return &Manager{execFor: execFor}
 }
 
-// List 列出节点上的磁盘与分区（排除 loop/ram 等虚拟设备）。
+// List 列出节点上的块设备（排除 ram/zram/loop/光驱/启动分区等虚拟或不可操作设备），
+// 并对每个设备标注 kind / system / operable。
+// 注意：返回全部已过滤设备；是否隐藏「不可操作设备」由调用方决定（Operable 字段）。
 func (m *Manager) List(ctx context.Context, n *store.Node) ([]Device, error) {
 	ex, err := m.execFor(n)
 	if err != nil {
 		return nil, err
 	}
+	return listDevices(ctx, ex)
+}
+
+// listDevices 读取并分类节点上的块设备。
+func listDevices(ctx context.Context, ex executor.Executor) ([]Device, error) {
 	r, err := ex.Exec(ctx, "lsblk", "-b", "-P", "-e", "7",
-		"-o", "NAME,PATH,SIZE,TYPE,FSTYPE,MOUNTPOINT,RO,RM,HOTPLUG,MODEL,LABEL")
+		"-o", "NAME,PATH,SIZE,TYPE,FSTYPE,MOUNTPOINT,RO,RM,HOTPLUG,MODEL,LABEL,TRAN,PKNAME")
 	if err != nil {
 		return nil, fmt.Errorf("lsblk 执行失败: %w", err)
 	}
 	if r.ExitCode != 0 {
 		return nil, fmt.Errorf("lsblk 失败: %s", strings.TrimSpace(r.Output))
 	}
-	devs := parseLsblk(r.Output)
+	out := filterBlockDevices(parseLsblk(r.Output))
+	// 系统盘识别失败时一律标记为不可操作，宁可失败也不误伤。
+	rootDisk, rerr := rootDiskPath(ctx, ex)
+	classifyDevices(out, rootDisk, rerr == nil)
+	return out, nil
+}
+
+// filterBlockDevices 仅保留真实磁盘与分区，剔除虚拟/启动类设备。
+func filterBlockDevices(devs []Device) []Device {
 	out := make([]Device, 0, len(devs))
 	for _, d := range devs {
-		if d.Type == "disk" || d.Type == "part" {
-			out = append(out, d)
+		if d.Type != "disk" && d.Type != "part" {
+			continue
+		}
+		if isNonOperableDeviceName(d.Name) {
+			continue
+		}
+		out = append(out, d)
+	}
+	return out
+}
+
+// isNonOperableDeviceName 判断内核名是否为 RAM 盘、loop、光驱、软驱、
+// 设备映射/软 RAID，以及 eMMC 的 boot/rpmb 等启动分区——这些一律不可操作。
+func isNonOperableDeviceName(name string) bool {
+	n := strings.ToLower(name)
+	for _, p := range []string{"ram", "zram", "loop", "sr", "fd", "dm-", "md", "nbd"} {
+		if strings.HasPrefix(n, p) {
+			return true
 		}
 	}
-	// 标记系统盘/系统分区，供前端禁用格式化/分区按钮。
-	if rootDisk, err := rootDiskPath(ctx, ex); err == nil && rootDisk != "" {
-		for i := range out {
-			if isSystemDevice(out[i].Path, rootDisk) {
-				out[i].System = true
+	// eMMC 启动分区：mmcblk0boot0 / mmcblk0boot1 / mmcblk0rpmb
+	if strings.Contains(n, "boot") || strings.HasSuffix(n, "rpmb") {
+		return true
+	}
+	return false
+}
+
+// classifyDevices 依据传输总线、可移除标记与系统盘位置，标注每个设备的
+// system / kind / operable。rootOK=false 表示系统盘识别失败。
+func classifyDevices(devs []Device, rootDisk string, rootOK bool) {
+	rootName := strings.TrimPrefix(rootDisk, "/dev/")
+	byName := make(map[string]*Device, len(devs))
+	for i := range devs {
+		byName[devs[i].Name] = &devs[i]
+	}
+	for i := range devs {
+		d := &devs[i]
+		transport, removable, hotplug := d.Transport, d.Removable, d.HotPlug
+		diskName := d.Name
+		if d.Type == "part" && d.Parent != "" {
+			diskName = d.Parent
+			// 分区的可移除/总线属性继承自所属磁盘。
+			if p, ok := byName[d.Parent]; ok {
+				transport = p.Transport
+				removable = p.Removable
+				hotplug = p.HotPlug
 			}
 		}
+		d.Transport = transport
+		// 主判据：设备所属磁盘是否即系统盘；兜底：路径前缀判断（兼容缺失 PKNAME 的场景）。
+		d.System = rootOK && rootName != "" &&
+			(diskName == rootName || isSystemDevice(d.Path, rootDisk))
+
+		if !rootOK {
+			d.System = false
+			d.Kind = kindUnknown
+			d.Operable = false
+			continue
+		}
+		switch {
+		case d.System:
+			d.Kind = kindSystem
+		case transport == "usb":
+			d.Kind = kindUSB
+		case transport == "mmc" && (removable || hotplug || mmcDiskIndexAtLeast1(diskName)):
+			d.Kind = kindSD
+		case transport == "" && removable && hotplug:
+			// 个别 USB 桥接芯片不报告 TRAN，但「可移除 + 热插拔」足以判定为外接 USB 介质。
+			d.Kind = kindUSB
+		default:
+			d.Kind = kindInternal
+		}
+		d.Operable = d.Kind == kindUSB || d.Kind == kindSD
 	}
-	return out, nil
+}
+
+// mmcDiskIndexAtLeast1 判断是否为次级 MMC 控制器上的磁盘（mmcblk1+）。
+// 0 号通常为板载 eMMC，1 号及以后一般为 SD 卡槽。
+func mmcDiskIndexAtLeast1(name string) bool {
+	if !strings.HasPrefix(name, "mmcblk") {
+		return false
+	}
+	rest := name[len("mmcblk"):]
+	i := 0
+	for i < len(rest) && rest[i] >= '0' && rest[i] <= '9' {
+		i++
+	}
+	if i == 0 {
+		return false
+	}
+	idx, err := strconv.Atoi(rest[:i])
+	return err == nil && idx >= 1
 }
 
 // rootDiskPath 返回当前系统的根设备所在磁盘路径（如 /dev/sda、/dev/mmcblk0）。
@@ -105,6 +229,7 @@ func rootDiskPath(ctx context.Context, ex executor.Executor) (string, error) {
 }
 
 // isSystemDevice 判定 device 是否为系统盘本身，或其上的任一分区。
+// 保留作为系统盘识别的兼容兜底（parseLsblk 平台可能缺失 PKNAME）。
 func isSystemDevice(device, rootDisk string) bool {
 	if rootDisk == "" || device == "" {
 		return false
@@ -159,21 +284,51 @@ func parseLsblk(out string) []Device {
 			Model:      kv["MODEL"],
 			ReadOnly:   ro,
 			Label:      label,
+			Transport:  strings.ToLower(kv["TRAN"]),
+			Parent:     kv["PKNAME"],
 		})
 	}
 	return devs
 }
 
-// Mount 挂载设备到指定目录（目录不存在时自动创建）。
-func (m *Manager) Mount(ctx context.Context, n *store.Node, device, mountpoint string) error {
+// requireOperable 校验设备属于可操作的 USB / SD 卡，且非系统盘/启动分区。
+// 这是所有写操作（挂载/卸载/自启/格式化/分区）的统一安全前置。
+func requireOperable(ctx context.Context, ex executor.Executor, device string) (*Device, error) {
 	if err := validateDevice(device); err != nil {
-		return err
+		return nil, err
 	}
+	devs, err := listDevices(ctx, ex)
+	if err != nil {
+		return nil, err
+	}
+	for i := range devs {
+		if devs[i].Path != device {
+			continue
+		}
+		d := &devs[i]
+		switch {
+		case d.System:
+			return nil, fmt.Errorf("禁止操作系统盘、系统分区或启动分区: %s", device)
+		case d.Kind == kindUnknown:
+			return nil, fmt.Errorf("无法识别系统盘，为防误操作拒绝操作 %s", device)
+		case !d.Operable:
+			return nil, fmt.Errorf("仅允许对 USB 设备与 SD 卡操作，%s 属于「%s」", device, KindLabel(d.Kind))
+		}
+		return d, nil
+	}
+	return nil, fmt.Errorf("设备不存在或不受支持: %s", device)
+}
+
+// Mount 挂载设备到指定目录（目录不存在时自动创建）。仅允许 USB / SD 卡。
+func (m *Manager) Mount(ctx context.Context, n *store.Node, device, mountpoint string) error {
 	if err := validateMountpoint(mountpoint); err != nil {
 		return err
 	}
 	ex, err := m.execFor(n)
 	if err != nil {
+		return err
+	}
+	if _, err := requireOperable(ctx, ex, device); err != nil {
 		return err
 	}
 	if r, err := ex.Exec(ctx, "mkdir", "-p", mountpoint); err != nil {
@@ -189,13 +344,16 @@ func (m *Manager) Mount(ctx context.Context, n *store.Node, device, mountpoint s
 	return nil
 }
 
-// Unmount 卸载挂载点。
-func (m *Manager) Unmount(ctx context.Context, n *store.Node, mountpoint string) error {
+// Unmount 卸载挂载点。设备须为可操作的 USB / SD 卡。
+func (m *Manager) Unmount(ctx context.Context, n *store.Node, device, mountpoint string) error {
 	if err := validateMountpoint(mountpoint); err != nil {
 		return err
 	}
 	ex, err := m.execFor(n)
 	if err != nil {
+		return err
+	}
+	if _, err := requireOperable(ctx, ex, device); err != nil {
 		return err
 	}
 	if r, err := ex.Exec(ctx, "umount", mountpoint); err != nil {
@@ -208,15 +366,16 @@ func (m *Manager) Unmount(ctx context.Context, n *store.Node, mountpoint string)
 
 // Autostart 设置（enabled=true）或取消（enabled=false）设备开机自动挂载。
 // 写 /etc/fstab 前先备份到 /etc/fstab.ocp.bak；nofail 保证设备缺失不阻塞启动。
+// 仅允许 USB / SD 卡。
 func (m *Manager) Autostart(ctx context.Context, n *store.Node, device, mountpoint string, enabled bool) error {
-	if err := validateDevice(device); err != nil {
-		return err
-	}
 	if err := validateMountpoint(mountpoint); err != nil {
 		return err
 	}
 	ex, err := m.execFor(n)
 	if err != nil {
+		return err
+	}
+	if _, err := requireOperable(ctx, ex, device); err != nil {
 		return err
 	}
 	uuid, err := blkidField(ctx, ex, device, "UUID")
@@ -406,11 +565,9 @@ func hasTool(ctx context.Context, ex executor.Executor, tool string) bool {
 }
 
 // Format 格式化设备为指定文件系统（可选卷标）。
-// 安全约束：拒绝系统盘/系统分区；文件系统须为白名单内；无法识别系统盘时拒绝操作。
+// 安全约束：仅允许 USB / SD 卡；拒绝系统盘/系统分区/启动分区；
+// 文件系统须为白名单内；无法识别系统盘时拒绝操作。
 func (m *Manager) Format(ctx context.Context, n *store.Node, device, fsType, label string) error {
-	if err := validateDevice(device); err != nil {
-		return err
-	}
 	fsType = strings.ToLower(strings.TrimSpace(fsType))
 	if !allowedFS[fsType] {
 		return fmt.Errorf("不支持的文件系统: %s（仅支持 ext4/vfat/ntfs/exfat）", fsType)
@@ -424,13 +581,8 @@ func (m *Manager) Format(ctx context.Context, n *store.Node, device, fsType, lab
 	if err != nil {
 		return err
 	}
-	// 必须能识别系统盘，否则拒绝以防误删数据。
-	rootDisk, err := rootDiskPath(ctx, ex)
-	if err != nil {
-		return fmt.Errorf("无法确定系统盘，为防误删拒绝格式化: %w", err)
-	}
-	if isSystemDevice(device, rootDisk) {
-		return fmt.Errorf("禁止格式化系统盘或系统分区: %s", device)
+	if _, err := requireOperable(ctx, ex, device); err != nil {
+		return err
 	}
 	// 若已挂载则先卸载，避免设备忙。
 	if r, e := ex.Exec(ctx, "umount", "-f", device); e == nil && r.ExitCode != 0 {
@@ -453,11 +605,8 @@ func (m *Manager) Format(ctx context.Context, n *store.Node, device, fsType, lab
 }
 
 // Partition 在整盘上重建分区表（gpt/msdos）并创建一个占满全盘的主分区。
-// 安全约束：拒绝系统盘；仅允许对整个磁盘操作；无法识别系统盘时拒绝操作。
+// 安全约束：仅允许 USB / SD 卡整盘；拒绝系统盘/启动分区；无法识别系统盘时拒绝操作。
 func (m *Manager) Partition(ctx context.Context, n *store.Node, device, scheme string) error {
-	if err := validateDevice(device); err != nil {
-		return err
-	}
 	scheme = strings.ToLower(strings.TrimSpace(scheme))
 	if scheme != "gpt" && scheme != "msdos" {
 		return fmt.Errorf("不支持的分区表类型: %s（仅支持 gpt/msdos）", scheme)
@@ -466,19 +615,13 @@ func (m *Manager) Partition(ctx context.Context, n *store.Node, device, scheme s
 	if err != nil {
 		return err
 	}
-	rootDisk, err := rootDiskPath(ctx, ex)
+	dev, err := requireOperable(ctx, ex, device)
 	if err != nil {
-		return fmt.Errorf("无法确定系统盘，为防误删拒绝分区: %w", err)
-	}
-	if isSystemDevice(device, rootDisk) {
-		return fmt.Errorf("禁止对系统盘重新分区: %s", device)
+		return err
 	}
 	// 仅允许对整盘操作，拒绝分区。
-	if r, e := ex.Exec(ctx, "lsblk", "-no", "TYPE", device); e == nil {
-		t := strings.TrimSpace(r.Output)
-		if t == "part" {
-			return fmt.Errorf("%s 是分区而非整盘，请对整个磁盘（如 /dev/sdb）执行分区", device)
-		}
+	if dev.Type != "disk" {
+		return fmt.Errorf("%s 是分区而非整盘，请对整个磁盘（如 /dev/sdb）执行分区", device)
 	}
 	// 尽力卸载该盘上的已有分区。
 	ex.Exec(ctx, "sh", "-c", "for p in $(lsblk -ln -o PATH "+device+" | tail -n +2); do umount -f \"$p\" 2>/dev/null; done")

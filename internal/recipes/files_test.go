@@ -81,3 +81,27 @@ func TestBuiltinRecipesMetadata(t *testing.T) {
 		}
 	}
 }
+
+// 关键应用必须进入内置清单，且直装（native）为第一优先级、Docker 作为兜底。
+func TestKeyAppsNativeFirst(t *testing.T) {
+	reg, err := LoadBuiltin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	idx := map[string]bool{}
+	for _, r := range reg.List() {
+		idx[r.ID] = true
+	}
+	for _, id := range []string{"cups", "cups-web", "lucky", "ddns-go"} {
+		r, ok := reg.Get(id)
+		if !ok {
+			t.Fatalf("应用 %s 未进入内置清单", id)
+		}
+		if len(r.Methods) < 2 || r.Methods[0] != "native" || r.Methods[1] != "docker" {
+			t.Fatalf("应用 %s methods=%v，应为 [native docker]（直装优先）", id, r.Methods)
+		}
+		if !idx[id] {
+			t.Fatalf("应用 %s 未出现在 List() 结果中", id)
+		}
+	}
+}

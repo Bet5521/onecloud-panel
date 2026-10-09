@@ -22,7 +22,7 @@ import (
 
 // 终端 WebSocket 帧协议（JSON，终端数据 base64）：
 //
-//	客户端→服务端：{action:"start", user, password, port, term, host_key_fingerprint}（首帧/指纹确认后重发）；
+//	客户端→服务端：{action:"start", user, password, port, term, cols, rows, host_key_fingerprint}（首帧/指纹确认后重发）；
 //	              {type:"input", data}；{type:"resize", cols, rows}
 //	服务端→客户端：{type:"hostkey", fingerprint}（首连待确认）；{type:"started"}；
 //	              {type:"output", data}；{type:"exit"}；{type:"error", message}
@@ -182,7 +182,8 @@ func (a *API) terminalSession(r *http.Request, ws *websocket.Conn, n *store.Node
 	}
 
 	// 阶段二：申请 PTY 并启动远端 Shell。
-	shell, err := client.OpenShell(start.Term, 0, 0)
+	// 使用客户端上报的尺寸初始化 PTY，避免以 0×0 打开导致远端 shell 换行异常。
+	shell, err := client.OpenShell(start.Term, start.Cols, start.Rows)
 	if err != nil {
 		out.sendError(err.Error())
 		return

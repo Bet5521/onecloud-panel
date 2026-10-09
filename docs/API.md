@@ -100,12 +100,12 @@ GET /api/dashboard/summary
 | POST | `/api/nodes/{id}/docker/install` | 安装 Docker |
 | PUT | `/api/nodes/{id}/docker-config` | 保存节点镜像加速/第三方仓库配置 |
 | POST | `/api/nodes/{id}/docker/apply-config` | 下发配置到节点 daemon.json（入队任务） |
-| GET | `/api/nodes/{id}/storage/devices` | 块设备列表（含挂载点/文件系统/卷标/系统盘标记） |
-| POST | `/api/nodes/{id}/storage/mount` | 挂载设备（可同时写入 fstab 自启） |
-| POST | `/api/nodes/{id}/storage/unmount` | 卸载设备 |
-| POST | `/api/nodes/{id}/storage/autostart` | 设置/取消开机自动挂载（写 fstab） |
-| POST | `/api/nodes/{id}/storage/format` | 格式化设备（ext4/vfat/ntfs/exfat） |
-| POST | `/api/nodes/{id}/storage/partition` | 重建分区表并创建单分区（GPT/MBR） |
+| GET | `/api/nodes/{id}/storage/devices` | 块设备列表（默认仅返回可操作设备；`?all=1` 含系统盘等） |
+| POST | `/api/nodes/{id}/storage/mount` | 挂载设备（仅 USB / SD 卡） |
+| POST | `/api/nodes/{id}/storage/unmount` | 卸载设备（仅 USB / SD 卡） |
+| POST | `/api/nodes/{id}/storage/autostart` | 设置/取消开机自动挂载（写 fstab，仅 USB / SD 卡） |
+| POST | `/api/nodes/{id}/storage/format` | 格式化设备（ext4/vfat/ntfs/exfat，仅 USB / SD 卡） |
+| POST | `/api/nodes/{id}/storage/partition` | 重建分区表并创建单分区（GPT/MBR，仅 USB / SD 卡整盘） |
 | GET | `/api/nodes/{id}/firewall` | 检测防火墙状态（后端/启停/规则列表） |
 | POST | `/api/nodes/{id}/firewall/rules` | 新增防火墙规则 |
 | POST | `/api/nodes/{id}/firewall/rules/remove` | 删除防火墙规则 |
@@ -146,43 +146,57 @@ GET /api/nodes/ssh-install?id=31
        "created_at":…,"started_at":…,"finished_at":null}
 # 任务不存在或非本类型 → 404；缺 id 或 id 非法 → 400
 
-# ---- 存储设备与 SD 卡管理 ----
+# ---- 存储设备与 SD 卡管理（安全策略：仅 USB 设备与 SD 卡可操作）----
 GET /api/nodes/1/storage/devices
 → 200 {"items":[{"name":"sda1","path":"/dev/sda1","size":32007032064,
        "type":"part","fstype":"vfat","mountpoint":"","removable":true,
-       "hotplug":true,"model":"SD Card","read_only":false,
-       "label":"BOOT","system":false}]}
+       "hotplug":true,"model":"USB DISK","read_only":false,
+       "label":"BOOT","transport":"usb","parent":"sda",
+       "system":false,"kind":"usb","operable":true}]}
 # 由节点执行器执行 lsblk 汇总，仅返回 disk/part；本地节点直接本机执行。
-# system=true 表示系统盘或其分区（禁止格式化 / 重新分区）。
+# 默认只返回 operable=true 的设备（USB / SD 卡）；加 ?all=1 可额外返回系统盘、
+# 内置存储等不可操作设备，供界面展示（前端对其禁用一切写操作）。
+# 字段说明：
+#   transport 传输总线（usb/mmc/sata/nvme…），parent 分区所属磁盘（PKNAME）；
+#   kind      设备类型：usb / sd / system / internal / unknown；
+#   system    true 表示系统盘、系统分区或启动分区（mmcblk0boot0 等）；
+#   operable  true 才允许挂载/卸载/自启/格式化/分区（仅 USB 与 SD 卡）。
+# RAM 盘（ram/zram）、loop、光驱、软驱、device-mapper/软 RAID 及 eMMC 启动分区
+# 已在服务端直接剔除，不会出现在结果中。
+# 无法识别系统盘时，所有设备 operable=false（宁可不可操作也不误删）。
 
 POST /api/nodes/1/storage/mount
 {"device":"/dev/sda1","mountpoint":"/mnt/sd-sda1"}
 → 200
 # 设备须 /dev/ 开头、挂载点须 / 开头；含空白或 shell 元字符 → 400
+# 服务端二次校验：仅允许 operable（USB / SD 卡）设备，否则 500。
 
 POST /api/nodes/1/storage/unmount
 {"device":"/dev/sda1","mountpoint":"/mnt/sd-sda1"}
 → 200
+# 同样要求 device 为可操作的 USB / SD 卡。
 
 POST /api/nodes/1/storage/autostart
 {"device":"/dev/sda1","mountpoint":"/mnt/sd-sda1","enabled":true}
 → 200
 # enabled=true：blkid 取 UUID 后以 nofail 方式追加/更新 /etc/fstab，
 # 原文件先备份为 /etc/fstab.ocp.bak；enabled=false：移除该挂载点对应条目
+# 同样要求 device 为可操作的 USB / SD 卡。
 
 POST /api/nodes/1/storage/format
 {"device":"/dev/sda1","fstype":"ext4","label":"data"}
 → 200 {"status":"ok"}
 # fstype 仅允许 ext4 / vfat / ntfs / exfat（白名单）。
-# 安全守卫：设备须为 /dev/ 下的白名单块设备；拒绝对系统盘/系统分区操作；
-# 检测不到系统盘时一律拒绝（宁可拒绝也不误删）。失败 → 500（含原因）。
+# 安全守卫：设备须为 /dev/ 下的白名单块设备；仅允许 USB 设备与 SD 卡；
+# 拒绝系统盘 / 系统分区 / 启动分区；检测不到系统盘时一律拒绝（宁可拒绝也不误删）。
+# 失败 → 500（含原因）。
 # 需管理员权限（node:write）；成功/失败均写审计日志（storage_format）。
 
 POST /api/nodes/1/storage/partition
 {"device":"/dev/sdb","scheme":"gpt"}
 → 200 {"status":"ok"}
-# scheme 仅允许 gpt / mbr；仅接受整盘设备（如 /dev/sdb，不接受分区 /dev/sdb1）。
-# 会重建分区表并创建一个占满全盘的分区，原数据不可恢复。
+# scheme 仅允许 gpt / msdos（msdos 即 MBR）；仅接受整盘设备（不接受 /dev/sdb1）。
+# 仅允许 USB 设备与 SD 卡；会重建分区表并创建一个占满全盘的分区，原数据不可恢复。
 # 同样的系统盘保护与设备白名单校验；审计动作 storage_partition。
 # 分区后新分区通常需再调用 /storage/format 格式化。
 

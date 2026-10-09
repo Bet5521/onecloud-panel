@@ -36,7 +36,9 @@ internal/
 web/                       前端源码（src/views、api、router、components）
 docs/                      项目文档
 dist/                      构建产物输出
+.github/workflows/         GitHub Actions（自动编译 + 发布 Release）
 Makefile
+build.sh / build.ps1       一键构建脚本（Linux/macOS 与 Windows）
 ```
 
 ## 三、开发环境
@@ -55,11 +57,21 @@ npm --prefix web ci        # 或 npm --prefix web install
 make vet               # go vet ./...
 make fmt               # gofmt -s -w
 make test              # go test ./... -p 1
-make build             # 交叉编译全部 4 个架构到 dist/
+make build             # 交叉编译常用 3 平台到 dist/（linux-armv7 / linux-arm64 / windows-amd64.exe）
 make run-panel         # 本机直接跑面板（:8000，数据目录 ./runtime-data）
 make run-agent         # 本机跑 agent
 make clean
 ```
+
+一键构建脚本（会先构建前端再交叉编译，产物落到 `dist/`）：
+
+```bash
+./build.sh -v 2.2.1            # Linux / macOS
+.\build.ps1 -Version 2.2.1     # Windows PowerShell
+# 加 -s / -SkipFrontend 可跳过前端构建（需已有 internal/web/assets 产物）
+```
+
+> 完整发布（8 个平台）由 CI 完成，见下文「九、CI/CD 与发布」。
 
 单独交叉编译（armv7 玩客云，PowerShell 写法）：
 
@@ -146,22 +158,48 @@ docker:
 变量支持 string/int/bool/select 类型；安装前做类型与字符集校验（防注入）。
 `config_files` 声明面板内可编辑的配置文件白名单。
 
+**发布包架构后缀**：像 lucky / ddns-go 这类把架构写进文件名或 URL 的项目，可用节点事实
+`{{$.Node.ArchPkg}}` 渲染出 `x86_64` / `arm64` / `armv7` / `i386`（映射见 `render.go`
+的 `NodeFactsForArch`）。示例：
+
+```yaml
+- name: 下载发布包
+  download:
+    url: https://github.com/gdy666/lucky/releases/download/v{{.Vars.lucky_version}}/lucky_{{.Vars.lucky_version}}_Linux_{{$.Node.ArchPkg}}.tar.gz
+    dest: /tmp/lucky.tgz
+```
+
+配合 `exec` 步骤解压并把二进制 `install` 到 `/usr/local/bin`、写 `systemd` 单元即可完成直装。
+新增的可直装应用应把 `methods` 写成 `[native, docker]`（native 优先，Docker 兜底）。
+
 注意：
 
 - 面向玩客云必须支持 `armv7l` 并提供对应镜像/二进制，否则在本机节点无法安装；
 - 修改配方后跑 `go test ./internal/recipes/... ./internal/apps/...` 校验。
 
-## 九、提交前自检清单
+## 九、CI/CD 与发布
+
+推送到 `main` 后由 GitHub Actions **自动编译并发布 Release**（版本号自增、tag 与 Release
+同名）。完整说明见 [CI/CD 文档 CI_CD.md](CI_CD.md)。要点：
+
+- 工作流：`.github/workflows/release.yml`；`push main` 自动发版，支持手动触发（可选递增方式）；
+- 版本号：基于仓库最大 `v*` tag 自动递增（默认 patch），`-ldflags` 注入二进制；
+- 产物：8 个平台二进制 + `checksums.txt`，命名必须与 `internal/update` 的在线更新约定一致
+  （见 CI_CD.md「产物命名约定」）；
+- 发布前必经 `go vet` + `go test`，失败不发布；
+- 只改文档（`*.md` / `docs/` / `.workbuddy/`）不触发发布。
+
+## 十、提交前自检清单
 
 ```bash
 make fmt
 make vet
 make test
 npm --prefix web run build && go build ./...
-# 涉及部署产物时按目标架构交叉编译
+# 涉及部署产物时按目标架构交叉编译（或直接用 ./build.sh / .\build.ps1）
 ```
 
-## 十、典型开发流程示例（新增一个后端可配置项）
+## 十一、典型开发流程示例（新增一个后端可配置项）
 
 1. 在 `settings.go` 的 `editableSettings` 加键并写校验；
 2. 业务代码通过 `store.GetSetting` 读取；

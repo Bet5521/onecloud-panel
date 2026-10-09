@@ -1,5 +1,8 @@
 # OneCloud Panel
 
+[![Build & Release](https://github.com/Bet5521/onecloud-panel/actions/workflows/release.yml/badge.svg)](https://github.com/Bet5521/onecloud-panel/actions/workflows/release.yml)
+[![Release](https://img.shields.io/github/v/release/Bet5521/onecloud-panel)](https://github.com/Bet5521/onecloud-panel/releases)
+
 > 自托管的轻量级集群管理面板，把刷入 Armbian 的玩客云（Amlogic S805，armv7l，约 1 GB 内存）及同类低功耗 Linux 小主机，组成混合架构集群，并在其上一键部署常用自托管应用。
 
 ---
@@ -8,8 +11,8 @@
 
 - **零运行时依赖**：单文件静态二进制（`CGO_ENABLED=0`），面板与 Agent 共用同一二进制，按子命令区分，不依赖 glibc 或运行时库。
 - **默认 HTTP、可选 HTTPS**：在「设置 → 传输安全」中开启自签或自定义证书；HTTP / HTTPS 共用同一端口，由连接首字节自动嗅探，开启 HTTPS 不改变端口、不影响节点接入。
-- **应用商店**：**26 个内置配方**，支持原生 `systemd` 直装与 Docker 容器两种方式。
-- **集群管理**：注册令牌接入节点，Agent 心跳上报，在线状态、资源指标一目了然。
+- **应用商店**：**28 个内置配方**，支持原生 `systemd` 直装与 Docker 容器两种方式；可直装的应用（如 CUPS / CUPS Web / Lucky / DDNS-GO）默认优先直装，Docker 作为兜底。
+- **集群管理**：注册令牌接入节点，Agent 心跳上报，在线状态、资源指标一目了然；内置 **SSH 终端**、**防火墙管理**，以及 **存储（SD 卡）挂载 / 格式化 / 分区** 能力，无需登录节点即可完成常用运维。
 - **权限体系**：13 个权限点，预置管理员 / 操作员 / 只读用户三种角色，可自定义。
 - **安全基线**：argon2id 密码哈希、登录与重置限流、会话管理、全量审计日志；
   全站安全响应头（CSP / HSTS / nosniff 等）、CSRF 同站校验、请求体限额、
@@ -32,30 +35,35 @@
 
 ### 第 1 步：获取二进制
 
-从 [GitHub Releases](https://github.com/Bet5521/onecloud-panel/releases) 下载对应架构的二进制：
+从 [GitHub Releases](https://github.com/Bet5521/onecloud-panel/releases) 下载对应架构的二进制
+（把 URL 中的 `latest` 换成具体版本号如 `v2.2.1` 可固定版本）：
 
 ```bash
 # x86_64
 curl -fsSL -o /usr/local/bin/onecloud-panel \
-  https://github.com/Bet5521/onecloud-panel/releases/download/v2.0.0/onecloud-panel-linux-amd64
+  https://github.com/Bet5521/onecloud-panel/releases/latest/download/onecloud-panel-linux-amd64
 
 # 玩客云 / armv7l
 # curl -fsSL -o /usr/local/bin/onecloud-panel \
-#   https://github.com/Bet5521/onecloud-panel/releases/download/v2.0.0/onecloud-panel-linux-armv7
+#   https://github.com/Bet5521/onecloud-panel/releases/latest/download/onecloud-panel-linux-armv7
 
 chmod +x /usr/local/bin/onecloud-panel
 ```
 
 <details>
-<summary>想自己编译？（需 Go 1.27+）</summary>
+<summary>想自己编译？（需 Go 1.27+ 与 Node 20+）</summary>
 
 ```bash
+# 一键脚本（推荐）：构建前端 + 交叉编译全部平台产物到 dist/
+./build.sh -v 2.2.1          # Windows 用 .\build.ps1 -Version 2.2.1
+
+# 或手动仅编译单个架构
 GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -trimpath \
-  -ldflags "-s -w -X onecloud-panel/internal/version.Version=2.0.0" \
+  -ldflags "-s -w -X onecloud-panel/internal/version.Version=2.2.1" \
   -o dist/onecloud-panel-linux-amd64 ./cmd/onecloud-panel
 ```
 
-更多架构见 `docs/DEPLOYMENT.md` 与 `Makefile`（`make build` 一次产出 4 个 Linux 架构）。
+更多架构见 `docs/DEPLOYMENT.md`、`docs/DEVELOPMENT.md` 与 `Makefile`。
 </details>
 
 ### 第 2 步：启动面板
@@ -123,7 +131,9 @@ Agent 每 30 秒心跳上报，注册成功后即可在面板看到节点在线�
 
 ## 下载
 
-GitHub Releases（`v2.0.0`）提供以下二进制：
+所有二进制由 **GitHub Actions 在每次推送到 `main` 后自动编译发布**（版本号自增，见
+[CI/CD 文档](docs/CI_CD.md)），可在 [GitHub Releases](https://github.com/Bet5521/onecloud-panel/releases)
+获取最新版本。用 `releases/latest/download/<文件名>` 可始终指向最新一次发布：
 
 | 文件 | 适用架构 / 系统 |
 |---|---|
@@ -135,8 +145,16 @@ GitHub Releases（`v2.0.0`）提供以下二进制：
 | `onecloud-panel-windows-arm64.exe` | Windows ARM64 |
 | `onecloud-panel-darwin-amd64` | macOS Intel |
 | `onecloud-panel-darwin-arm64` | macOS Apple Silicon |
+| `checksums.txt` | 上述产物的 sha256 校验和（在线更新校验用） |
 
 面板与 Agent 是同一二进制，靠 `panel` / `agent` 子命令区分。
+
+```bash
+# 始终下载最新发布（示例：x86_64）
+curl -fsSL -o /usr/local/bin/onecloud-panel \
+  https://github.com/Bet5521/onecloud-panel/releases/latest/download/onecloud-panel-linux-amd64
+chmod +x /usr/local/bin/onecloud-panel
+```
 
 ---
 
@@ -150,26 +168,29 @@ GitHub Releases（`v2.0.0`）提供以下二进制：
 | [用户手册 USER_GUIDE.md](docs/USER_GUIDE.md) | 各页面功能与典型操作流程（面向使用者） |
 | [API 文档 API.md](docs/API.md) | REST API 鉴权、端点清单、请求 / 响应示例 |
 | [开发文档 DEVELOPMENT.md](docs/DEVELOPMENT.md) | 目录结构、开发环境、测试、交叉编译、配方开发规范 |
+| [CI/CD 文档 CI_CD.md](docs/CI_CD.md) | GitHub Actions 自动编译与发布流程、版本自增规则、产物命名约定 |
 | [项目文档索引 docs/README.md](docs/README.md) | 文档总览与内置应用清单 |
 
 ---
 
-## 内置应用（26 款）
+## 内置应用（28 款）
 
 | 应用 | 分类 | 部署方式 |
 |---|---|---|
-| AdGuard Home | 网络 | 原生 / Docker |
-| mihomo (Clash Meta) | 网络 | 原生 / Docker |
+| AdGuard Home | 网络 | 原生（优先）/ Docker |
+| mihomo (Clash Meta) | 网络 | 原生（优先）/ Docker |
 | WireGuard | 网络 | 原生 |
-| Cloudflared | 网络 | 原生 / Docker |
+| Cloudflared | 网络 | 原生（优先）/ Docker |
 | MiGPT | 网络 | Docker |
 | Nginx Proxy Manager（NPM） | 网络 | Docker |
 | Nginx | 网络 | Docker |
-| Syncthing | 文件 | 原生 / Docker |
-| 微力同步 (verysync) | 文件 | 原生 / Docker |
+| **Lucky** | 网络 | 原生（优先）/ Docker |
+| **DDNS-GO** | 网络 | 原生（优先）/ Docker |
+| Syncthing | 文件 | 原生（优先）/ Docker |
+| 微力同步 (verysync) | 文件 | 原生（优先）/ Docker |
 | Alist | 文件 | Docker |
 | OpenList | 文件 | Docker |
-| Gitea | 开发 | 原生 / Docker |
+| Gitea | 开发 | 原生（优先）/ Docker |
 | aria2 (+AriaNg) | 下载 | Docker |
 | qBittorrent | 下载 | Docker |
 | Transmission | 下载 | 原生 |
@@ -180,10 +201,13 @@ GitHub Releases（`v2.0.0`）提供以下二进制：
 | Jellyfin | 多媒体 | Docker |
 | XiaoMusic | 多媒体 | Docker |
 | Home Assistant | 智能家居 | Docker |
-| CUPS 打印服务 | 外设 | 原生 / Docker |
-| CUPS Web 打印 | 外设 | Docker |
+| CUPS 打印服务 | 外设 | 原生（优先）/ Docker |
+| CUPS Web 打印 | 外设 | 原生（优先）/ Docker |
 | One-KVM | 运维 | Docker |
 | Vaultwarden | 安全 | Docker |
+
+> 「原生（优先）」表示该应用声明了 `methods: [native, docker]`，面板默认按直装（systemd
+> 服务）方式安装，直装不可用时再回退到 Docker。
 
 ---
 

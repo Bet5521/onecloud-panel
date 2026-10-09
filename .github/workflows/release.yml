@@ -1,0 +1,228 @@
+# Build & Release —— push 后自动编译并发布到 GitHub Release
+#
+# 触发方式：
+#   1) push 到 main：自动编译 → 版本号自增（默认 patch）→ 打新 tag → 创建/更新 Release 并上传产物；
+#   2) 手动触发（Actions → Build & Release → Run workflow）：可选择版本递增方式
+#      （patch / minor / major / current）。
+#
+# 产物命名与面板「在线更新器」（internal/update）约定严格一致：
+#   onecloud-panel-linux-{armv7,arm64,amd64,386}
+#   onecloud-panel-windows-{amd64,arm64}.exe
+#   onecloud-panel-darwin-{amd64,arm64}
+#   checksums.txt（每行 `<sha256>  <文件名>`，供 sha256 校验回退使用）
+#
+# 只改文档（*.md / docs/ / .workbuddy/）的提交不会触发发布，避免产生无意义的版本。
+# 如需「每次 push 都发版」，删除下面的 paths-ignore 即可；
+# 如需跳过某次提交，可在 commit message 中加入 [skip ci]。
+
+name: Build & Release
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+      - ".workbuddy/**"
+      - "LICENSE"
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: "版本递增方式"
+        required: true
+        default: patch
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+          - current
+
+# 创建 Release / 推送 tag 需要写权限；读取仓库内容需要读权限。
+permissions:
+  contents: write
+
+# 同一时刻只允许一个发布流程，避免并发自增 tag 冲突。
+concurrency:
+  group: build-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # 1) 编译：构建前端 → 校验 → 交叉编译全部平台 → 生成校验和 → 上传产物
+  # ---------------------------------------------------------------------------
+  build:
+    name: 编译与校验
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.ver.outputs.tag }}
+      version: ${{ steps.ver.outputs.version }}
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+        with:
+          # 需要完整历史与 tag，才能读取/自增版本号。
+          fetch-depth: 0
+
+      - name: 安装 Go（读取 go.mod 版本）
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: 安装 Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: 构建前端（产物写入 internal/web/assets，由 go:embed 嵌入）
+        working-directory: web
+        run: |
+          npm ci --no-audit --no-fund
+          npm run build
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: 单元测试
+        run: go test ./... -p 1 -count=1 -timeout 300s
+
+      - name: 计算版本号
+        id: ver
+        shell: bash
+        run: |
+          set -euo pipefail
+          BUMP="${{ github.event.inputs.bump || 'patch' }}"
+
+          git fetch --tags --force >/dev/null 2>&1 || true
+          LATEST="$(git tag -l 'v*' --sort=-v:refname | head -n1 || true)"
+          [ -z "$LATEST" ] && LATEST="v0.0.0"
+          BASE="${LATEST#v}"
+
+          IFS='.' read -r MA MI PA <<< "$BASE"
+          MA=${MA:-0}; MI=${MI:-0}; PA=${PA:-0}
+          # 去掉可能存在的预发布后缀（如 2.2.0-rc1 → 2.2.0）
+          PA="${PA%%[!0-9]*}"; PA=${PA:-0}
+
+          case "$BUMP" in
+            major)   MA=$((MA + 1)); MI=0; PA=0 ;;
+            minor)   MI=$((MI + 1)); PA=0 ;;
+            current) ;;
+            *)       PA=$((PA + 1)) ;;
+          esac
+
+          VERSION="${MA}.${MI}.${PA}"
+          TAG="v${VERSION}"
+          echo "基准 tag=$LATEST  递增方式=$BUMP  →  version=$VERSION  tag=$TAG"
+          {
+            echo "version=$VERSION"
+            echo "tag=$TAG"
+            echo "commit=${GITHUB_SHA::7}"
+            echo "build_date=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: 交叉编译全部平台
+        shell: bash
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+          COMMIT: ${{ steps.ver.outputs.commit }}
+          BUILD_DATE: ${{ steps.ver.outputs.build_date }}
+        run: |
+          set -euo pipefail
+          export CGO_ENABLED=0
+          LDFLAGS="-s -w \
+          -X onecloud-panel/internal/version.Version=${VERSION} \
+          -X onecloud-panel/internal/version.Commit=${COMMIT} \
+          -X onecloud-panel/internal/version.BuildDate=${BUILD_DATE}"
+          mkdir -p dist
+
+          build_one() { # goos goarch goarm out
+            local goos="$1" goarch="$2" goarm="$3" out="$4"
+            echo "==> 编译 ${out} (${goos}/${goarch}${goarm:+/armv${goarm}})"
+            if [ -n "$goarm" ]; then
+              GOOS="$goos" GOARCH="$goarch" GOARM="$goarm" \
+                go build -trimpath -ldflags "$LDFLAGS" -o "dist/${out}" ./cmd/onecloud-panel
+            else
+              GOOS="$goos" GOARCH="$goarch" \
+                go build -trimpath -ldflags "$LDFLAGS" -o "dist/${out}" ./cmd/onecloud-panel
+            fi
+          }
+
+          build_one linux   arm   7  onecloud-panel-linux-armv7
+          build_one linux   arm64 "" onecloud-panel-linux-arm64
+          build_one linux   amd64 "" onecloud-panel-linux-amd64
+          build_one linux   386   "" onecloud-panel-linux-386
+          build_one windows amd64 "" onecloud-panel-windows-amd64.exe
+          build_one windows arm64 "" onecloud-panel-windows-arm64.exe
+          build_one darwin  amd64 "" onecloud-panel-darwin-amd64
+          build_one darwin  arm64 "" onecloud-panel-darwin-arm64
+
+          echo "==> 生成 checksums.txt"
+          ( cd dist && sha256sum onecloud-panel-* > checksums.txt && cat checksums.txt )
+
+      - name: 上传产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: onecloud-panel-dist
+          path: |
+            dist/onecloud-panel-*
+            dist/checksums.txt
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: 写入任务摘要
+        shell: bash
+        run: |
+          {
+            echo "### 编译结果"
+            echo ""
+            echo "- 版本：\`${{ steps.ver.outputs.version }}\`（tag \`${{ steps.ver.outputs.tag }}\`）"
+            echo "- commit：\`${{ steps.ver.outputs.commit }}\`"
+            echo ""
+            echo "| 产物 | 大小 |"
+            echo "|---|---|"
+            ( cd dist && for f in onecloud-panel-*; do
+                printf '| `%s` | %s |\n' "$f" "$(du -h "$f" | cut -f1)"
+              done )
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # ---------------------------------------------------------------------------
+  # 2) 发布：仅在 push 到 main 或手动触发时执行，用 tag 值创建 Release 并附上产物
+  # ---------------------------------------------------------------------------
+  release:
+    name: 发布 Release
+    needs: build
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: 下载编译产物
+        uses: actions/download-artifact@v4
+        with:
+          name: onecloud-panel-dist
+          path: dist
+
+      - name: 校验产物完整性
+        shell: bash
+        run: |
+          set -euo pipefail
+          ls -lh dist/
+          test -f dist/checksums.txt
+          # 逐个核对 checksums.txt 中列出的文件都存在且哈希一致
+          ( cd dist && sha256sum -c checksums.txt )
+
+      - name: 创建 / 更新 Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.build.outputs.tag }}
+          name: ${{ needs.build.outputs.tag }}
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: |
+            dist/onecloud-panel-*
+            dist/checksums.txt
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

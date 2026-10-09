@@ -8,8 +8,8 @@ OneCloud Panel 是一个自托管的轻量级集群管理面板，面向刷入 A
 
 - **零运行时依赖**：单文件静态二进制（CGO_ENABLED=0），面板与 Agent 同一二进制，按子命令区分
 - **默认 HTTP、可选 HTTPS**：在面板设置中开启自签或自定义证书；HTTP/HTTPS 同端口共存，可强制跳转
-- **应用商店**：26 个内置配方，支持原生 systemd 直装与 Docker 容器两种方式
-- **集群管理**：注册令牌接入节点，Agent 心跳上报，在线状态、资源指标一目了然
+- **应用商店**：28 个内置配方，支持原生 systemd 直装与 Docker 容器两种方式；可直装的应用默认优先直装、Docker 兜底
+- **集群管理**：注册令牌接入节点，Agent 心跳上报，在线状态、资源指标一目了然；内置 SSH 终端、防火墙管理与存储（SD 卡）挂载 / 格式化 / 分区
 - **权限体系**：13 个权限点，预置管理员 / 操作员 / 只读用户三种角色，可自定义
 - **安全基线**：argon2id 密码哈希、登录与重置限流、会话管理、全量审计日志；全站安全响应头（CSP/HSTS 等）、CSRF 同站校验、请求体限额、登录设备管理
 - **密码自助重置**：登录页凭重置码（15 分钟有效）自助重置，SMTP 邮件与服务日志双通道（确认接口带防爆破限流）
@@ -25,6 +25,7 @@ OneCloud Panel 是一个自托管的轻量级集群管理面板，面向刷入 A
 | [用户手册 USER_GUIDE.md](USER_GUIDE.md) | 各页面功能与典型操作流程（面向使用者） |
 | [API 文档 API.md](API.md) | REST API 鉴权、端点清单、请求/响应示例 |
 | [开发文档 DEVELOPMENT.md](DEVELOPMENT.md) | 目录结构、开发环境、测试、交叉编译、配方开发规范 |
+| [CI/CD 文档 CI_CD.md](CI_CD.md) | GitHub Actions 自动编译与发布流程、版本自增规则、产物命名约定 |
 | [安全审计 SECURITY_AUDIT.md](SECURITY_AUDIT.md) | 安全检查结论、问题清单与加固记录、功能修补与新增清单 |
 
 ## 快速开始
@@ -41,22 +42,24 @@ curl -fsSL http://<面板IP>:8080/install.sh | sudo bash -s -- panel \
 更完整的「第一次系统部署」五分钟上手指南见仓库根目录
 [README.md](https://github.com/Bet5521/onecloud-panel#第一次部署5-分钟快速开始)。
 
-## 内置应用（26 款）
+## 内置应用（28 款）
 
 | 应用 | 分类 | 部署方式 |
 |---|---|---|
-| AdGuard Home | 网络 | 原生 / Docker |
-| mihomo (Clash Meta) | 网络 | 原生 / Docker |
+| AdGuard Home | 网络 | 原生（优先）/ Docker |
+| mihomo (Clash Meta) | 网络 | 原生（优先）/ Docker |
 | WireGuard | 网络 | 原生 |
-| Cloudflared | 网络 | 原生 / Docker |
+| Cloudflared | 网络 | 原生（优先）/ Docker |
 | MiGPT | 网络 | Docker |
 | Nginx Proxy Manager（NPM） | 网络 | Docker |
 | Nginx | 网络 | Docker |
-| Syncthing | 文件 | 原生 / Docker |
-| 微力同步 (verysync) | 文件 | 原生 / Docker |
+| Lucky | 网络 | 原生（优先）/ Docker |
+| DDNS-GO | 网络 | 原生（优先）/ Docker |
+| Syncthing | 文件 | 原生（优先）/ Docker |
+| 微力同步 (verysync) | 文件 | 原生（优先）/ Docker |
 | Alist | 文件 | Docker |
 | OpenList | 文件 | Docker |
-| Gitea | 开发 | 原生 / Docker |
+| Gitea | 开发 | 原生（优先）/ Docker |
 | aria2 (+AriaNg) | 下载 | Docker |
 | qBittorrent | 下载 | Docker |
 | Transmission | 下载 | 原生 |
@@ -67,7 +70,7 @@ curl -fsSL http://<面板IP>:8080/install.sh | sudo bash -s -- panel \
 | Jellyfin | 多媒体 | Docker |
 | XiaoMusic | 多媒体 | Docker |
 | Home Assistant | 智能家居 | Docker |
-| CUPS 打印服务 | 外设 | 原生 / Docker |
-| CUPS Web 打印 | 外设 | Docker |
+| CUPS 打印服务 | 外设 | 原生（优先）/ Docker |
+| CUPS Web 打印 | 外设 | 原生（优先）/ Docker |
 | One-KVM | 运维 | Docker |
 | Vaultwarden | 安全 | Docker |

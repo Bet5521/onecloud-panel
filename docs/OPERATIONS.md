@@ -157,6 +157,23 @@ systemctl restart onecloud-panel-agent
 
 > 面板与 Agent 二进制是同一个文件，按 `panel` / `agent` 子命令区分模式。
 
+### 4.3 面板在线更新（推荐）
+
+面板内置在线更新：查询 GitHub 最新 Release → 下载当前架构二进制 → sha256 校验 → 原子替换
+自身。入口在 **设置 → 版本更新**（需 `settings:write`）。
+
+```bash
+# 1. 检查是否有新版本
+curl -b session.txt http://127.0.0.1:8080/api/update/check
+
+# 2. 应用更新（下载并替换二进制，之后由 systemd 重启生效）
+curl -b session.txt -X POST http://127.0.0.1:8080/api/update/apply
+systemctl restart onecloud-panel
+```
+
+> 在线更新依赖 Release 资产命名与 `checksums.txt` 约定，见 [CI/CD 文档](CI_CD.md)。
+> 若节点无外网，可在「设置 → GitHub 加速」配置代理，或手动下载后按 4.1 覆盖升级。
+
 ## 五、节点管理
 
 ### 5.1 查看节点

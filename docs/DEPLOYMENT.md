@@ -39,23 +39,32 @@
 
 ## 三、构建二进制（可选，已有 release 可跳过）
 
+> 官方发布由 GitHub Actions 自动完成（推送 `main` 即编译并发版），可直接从
+> [Releases](https://github.com/Bet5521/onecloud-panel/releases) 下载，无需自行构建。
+
 ```bash
-# 全部架构
+# 一键脚本：构建前端 + 交叉编译，产物落到 dist/（推荐）
+./build.sh -v 2.2.1                 # Windows 用 .\build.ps1 -Version 2.2.1
+
+# 或只编译常用 3 平台（linux-armv7 / linux-arm64 / windows-amd64.exe）
 make build
 
 # 单架构（以 armv7 为例）
 GOOS=linux GOARCH=arm GOARM=7 CGO_ENABLED=0 go build -trimpath \
-  -ldflags "-s -w -X onecloud-panel/internal/version.Version=1.0.0" \
+  -ldflags "-s -w -X onecloud-panel/internal/version.Version=2.2.1" \
   -o dist/onecloud-panel-linux-armv7 ./cmd/onecloud-panel
 ```
 
-构建产物：
+构建产物（完整清单由 CI 产出 8 个平台，见 [CI/CD 文档](CI_CD.md)）：
 ```
 dist/
   onecloud-panel-linux-armv7    # 玩客云 / armv7l
   onecloud-panel-linux-arm64    # aarch64
   onecloud-panel-linux-amd64    # x86_64
   onecloud-panel-linux-386      # i386
+  onecloud-panel-windows-amd64.exe
+  ...（windows-arm64 / darwin-amd64 / darwin-arm64）
+  checksums.txt                 # sha256 校验和
 ```
 
 ## 四、部署面板

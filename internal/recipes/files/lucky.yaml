@@ -1,0 +1,63 @@
+api_version: 1
+id: lucky
+name: Lucky
+category: 网络
+icon: network
+description: 多功能网关注插件：DDNS、端口转发、IPv6 隧道、WebDAV、内网穿透、网络唤醒等。默认 Web 管理端口 16601。直装优先（下载官方二进制），容器方式为兜底。
+homepage: https://github.com/gdy666/lucky
+methods: [native, docker]
+ports:
+  - {port: 16601, proto: tcp, description: Web 管理界面}
+healthcheck: {type: http, port: 16601, path: /}
+variables:
+  - {key: lucky_version, name: 版本, type: string, default: 2.27.2, description: 发布版本号（不含 v 前缀），如 2.27.2}
+  - {key: lucky_conf_dir, name: 配置目录, type: string, default: /etc/lucky}
+native:
+  arches: [armv7l, aarch64, x86_64, i386]
+  unit_name: lucky.service
+  unit_template: |
+    [Unit]
+    Description=Lucky
+    After=network-online.target
+    Wants=network-online.target
+
+    [Service]
+    Type=simple
+    ExecStart=/usr/local/bin/lucky -cd {{.Vars.lucky_conf_dir}}
+    Restart=on-failure
+    RestartSec=5s
+
+    [Install]
+    WantedBy=multi-user.target
+  install_steps:
+    - name: 建配置目录
+      mkdir:
+        - "{{.Vars.lucky_conf_dir}}"
+    - name: 下载发布包
+      download:
+        url: https://github.com/gdy666/lucky/releases/download/v{{.Vars.lucky_version}}/lucky_{{.Vars.lucky_version}}_Linux_{{$.Node.ArchPkg}}.tar.gz
+        dest: /tmp/lucky.tgz
+    - name: 解压并安装 lucky
+      exec:
+        command: sh
+        args:
+          - -c
+          - |
+            tar xzf /tmp/lucky.tgz -C /tmp
+            BIN=$(find /tmp -maxdepth 2 -type f -name lucky 2>/dev/null | head -n1)
+            if [ -z "$BIN" ]; then
+              echo "未找到 lucky 二进制"; exit 1
+            fi
+            install -m 0755 "$BIN" /usr/local/bin/lucky
+            rm -f /tmp/lucky.tgz
+  uninstall_steps:
+    - name: 删除程序与配置
+      exec: {command: rm, args: ["-rf", "/usr/local/bin/lucky", "{{.Vars.lucky_conf_dir}}"]}
+docker:
+  arches: [armv7l, aarch64, x86_64, i386]
+  image: gdy666/lucky
+  ports: ["16601:16601"]
+  restart_policy: unless-stopped
+  install_steps:
+    - name: 建配置目录
+      mkdir: [/etc/lucky]

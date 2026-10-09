@@ -155,6 +155,10 @@ func (a *API) Handler() http.Handler {
 		auth.RequirePermission(store.PermNodeWrite, http.HandlerFunc(a.nodeStorageUnmount))))
 	mux.Handle("POST /api/nodes/{id}/storage/autostart", a.mw.RequireAuth(
 		auth.RequirePermission(store.PermNodeWrite, http.HandlerFunc(a.nodeStorageAutostart))))
+	mux.Handle("POST /api/nodes/{id}/storage/format", a.mw.RequireAuth(
+		auth.RequirePermission(store.PermNodeWrite, http.HandlerFunc(a.storageFormat))))
+	mux.Handle("POST /api/nodes/{id}/storage/partition", a.mw.RequireAuth(
+		auth.RequirePermission(store.PermNodeWrite, http.HandlerFunc(a.storagePartition))))
 	mux.Handle("GET /api/nodes/{id}/terminal", a.mw.RequireAuth(
 		auth.RequirePermission(store.PermNodeWrite, http.HandlerFunc(a.nodeTerminal))))
 	mux.Handle("GET /api/nodes/{id}/firewall", a.mw.RequireAuth(

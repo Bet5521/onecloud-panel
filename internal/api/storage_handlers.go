@@ -100,6 +100,61 @@ func (a *API) nodeStorageAutostart(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]string{"status": "ok"})
 }
 
+type storageFormatReq struct {
+	Device string `json:"device"`
+	FSType string `json:"fstype"`
+	Label  string `json:"label"`
+}
+
+// POST /api/nodes/{id}/storage/format — 格式化设备（ext4/vfat/ntfs/exfat）。
+func (a *API) storageFormat(w http.ResponseWriter, r *http.Request) {
+	n, ok := a.scopedNode(w, r)
+	if !ok {
+		return
+	}
+	var req storageFormatReq
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "请求格式错误")
+		return
+	}
+	if err := a.storage.Format(r.Context(), n, req.Device, req.FSType, req.Label); err != nil {
+		a.audit.Record(r, "node", "storage_format", "node", strconv.FormatInt(n.ID, 10), audit.ResultFailure,
+			audit.DetailJSON(map[string]any{"device": req.Device, "fstype": req.FSType, "error": err.Error()}))
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	a.audit.Record(r, "node", "storage_format", "node", strconv.FormatInt(n.ID, 10), audit.ResultSuccess,
+		audit.DetailJSON(map[string]any{"device": req.Device, "fstype": req.FSType, "label": req.Label}))
+	writeJSON(w, map[string]string{"status": "ok"})
+}
+
+type storagePartitionReq struct {
+	Device string `json:"device"`
+	Scheme string `json:"scheme"`
+}
+
+// POST /api/nodes/{id}/storage/partition — 重建分区表并创建单个占满全盘的分区。
+func (a *API) storagePartition(w http.ResponseWriter, r *http.Request) {
+	n, ok := a.scopedNode(w, r)
+	if !ok {
+		return
+	}
+	var req storagePartitionReq
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "请求格式错误")
+		return
+	}
+	if err := a.storage.Partition(r.Context(), n, req.Device, req.Scheme); err != nil {
+		a.audit.Record(r, "node", "storage_partition", "node", strconv.FormatInt(n.ID, 10), audit.ResultFailure,
+			audit.DetailJSON(map[string]any{"device": req.Device, "scheme": req.Scheme, "error": err.Error()}))
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	a.audit.Record(r, "node", "storage_partition", "node", strconv.FormatInt(n.ID, 10), audit.ResultSuccess,
+		audit.DetailJSON(map[string]any{"device": req.Device, "scheme": req.Scheme}))
+	writeJSON(w, map[string]string{"status": "ok"})
+}
+
 // scopedNode 公共前置：解析节点 ID、取节点、校验归属（失败已写响应）。
 func (a *API) scopedNode(w http.ResponseWriter, r *http.Request) (*store.Node, bool) {
 	id, err := idFromPath(r)

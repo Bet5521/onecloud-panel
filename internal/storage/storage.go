@@ -29,6 +29,8 @@ type Device struct {
 	HotPlug    bool   `json:"hotplug"`    // 热插拔（HOTPLUG=1）
 	Model      string `json:"model"`      // 型号（部分设备为空）
 	ReadOnly   bool   `json:"read_only"`  // 只读（RO=1，如写保护 SD 卡）
+	Label      string `json:"label"`      // 卷标（LABEL）
+	System     bool   `json:"system"`     // 系统盘/系统分区（禁止格式化与重新分区）
 }
 
 // Manager 存储管理入口。
@@ -48,7 +50,7 @@ func (m *Manager) List(ctx context.Context, n *store.Node) ([]Device, error) {
 		return nil, err
 	}
 	r, err := ex.Exec(ctx, "lsblk", "-b", "-P", "-e", "7",
-		"-o", "NAME,PATH,SIZE,TYPE,FSTYPE,MOUNTPOINT,RO,RM,HOTPLUG,MODEL")
+		"-o", "NAME,PATH,SIZE,TYPE,FSTYPE,MOUNTPOINT,RO,RM,HOTPLUG,MODEL,LABEL")
 	if err != nil {
 		return nil, fmt.Errorf("lsblk 执行失败: %w", err)
 	}
@@ -62,7 +64,66 @@ func (m *Manager) List(ctx context.Context, n *store.Node) ([]Device, error) {
 			out = append(out, d)
 		}
 	}
+	// 标记系统盘/系统分区，供前端禁用格式化/分区按钮。
+	if rootDisk, err := rootDiskPath(ctx, ex); err == nil && rootDisk != "" {
+		for i := range out {
+			if isSystemDevice(out[i].Path, rootDisk) {
+				out[i].System = true
+			}
+		}
+	}
 	return out, nil
+}
+
+// rootDiskPath 返回当前系统的根设备所在磁盘路径（如 /dev/sda、/dev/mmcblk0）。
+// 用于识别系统盘，防止误格式化/误分区。检测失败时返回错误。
+func rootDiskPath(ctx context.Context, ex executor.Executor) (string, error) {
+	r, err := ex.Exec(ctx, "findmnt", "-n", "-o", "SOURCE", "-T", "/")
+	if err != nil {
+		return "", fmt.Errorf("findmnt 执行失败: %w", err)
+	}
+	if r.ExitCode != 0 {
+		return "", fmt.Errorf("无法确定根设备: %s", strings.TrimSpace(r.Output))
+	}
+	src := strings.TrimSpace(r.Output)
+	if src == "" {
+		return "", fmt.Errorf("无法确定根设备（findmnt 无输出）")
+	}
+	// 解析父磁盘（PKNAME）。/dev/root 等符号链接由 lsblk 自动展开。
+	pk, err := ex.Exec(ctx, "lsblk", "-no", "PKNAME", src)
+	if err != nil {
+		return "", fmt.Errorf("lsblk 执行失败: %w", err)
+	}
+	if pk.ExitCode != 0 {
+		return "", fmt.Errorf("无法确定系统盘: %s", strings.TrimSpace(pk.Output))
+	}
+	pkName := strings.TrimSpace(pk.Output)
+	if pkName == "" {
+		return "", fmt.Errorf("无法确定系统盘（根设备 %s 无父磁盘，可能位于逻辑卷/ overlay）", src)
+	}
+	return "/dev/" + pkName, nil
+}
+
+// isSystemDevice 判定 device 是否为系统盘本身，或其上的任一分区。
+func isSystemDevice(device, rootDisk string) bool {
+	if rootDisk == "" || device == "" {
+		return false
+	}
+	if device == rootDisk {
+		return true
+	}
+	// /dev/mmcblk0p1 / /dev/nvme0n1p1 形式（带 p 分隔）
+	if strings.HasPrefix(device, rootDisk+"p") {
+		return true
+	}
+	// /dev/sda1 / /dev/vda1 形式（直接拼接数字）
+	if len(device) > len(rootDisk) && strings.HasPrefix(device, rootDisk) {
+		rest := device[len(rootDisk):]
+		if rest[0] >= '0' && rest[0] <= '9' {
+			return true
+		}
+	}
+	return false
 }
 
 var lsblkKV = regexp.MustCompile(`([A-Z_]+)="([^"]*)"`)
@@ -81,6 +142,11 @@ func parseLsblk(out string) []Device {
 		size := 0
 		fmt.Sscan(kv["SIZE"], &size)
 		ro := kv["RO"] == "1"
+		label := kv["LABEL"]
+		// lsblk 对空字段可能输出字面量 "none"，归一化为空。
+		if label == "none" {
+			label = ""
+		}
 		devs = append(devs, Device{
 			Name:       kv["NAME"],
 			Path:       kv["PATH"],
@@ -92,6 +158,7 @@ func parseLsblk(out string) []Device {
 			HotPlug:    kv["HOTPLUG"] == "1",
 			Model:      kv["MODEL"],
 			ReadOnly:   ro,
+			Label:      label,
 		})
 	}
 	return devs
@@ -266,5 +333,165 @@ func validateMountpoint(mp string) error {
 	if strings.Contains(mp, "..") || strings.ContainsAny(mp, forbiddenChars) {
 		return fmt.Errorf("挂载点非法: %q", mp)
 	}
+	return nil
+}
+
+// 允许格式化的文件系统白名单（ext4/vfat/ntfs/exfat）。
+var allowedFS = map[string]bool{"ext4": true, "vfat": true, "ntfs": true, "exfat": true}
+
+// mkfsToolName 返回某文件系统对应的 mkfs 工具名。
+func mkfsToolName(fsType string) string {
+	switch fsType {
+	case "ext4":
+		return "mkfs.ext4"
+	case "vfat":
+		return "mkfs.vfat"
+	case "ntfs":
+		return "mkfs.ntfs"
+	case "exfat":
+		return "mkfs.exfat"
+	}
+	return "mkfs." + fsType
+}
+
+// mkfsPkg 返回安装对应 mkfs 工具所需的系统包名（用于错误提示）。
+func mkfsPkg(fsType string) string {
+	switch fsType {
+	case "ext4":
+		return "e2fsprogs"
+	case "vfat":
+		return "dosfstools"
+	case "ntfs":
+		return "ntfs-3g"
+	case "exfat":
+		return "exfatprogs"
+	}
+	return fsType
+}
+
+// mkfsArgs 构造 mkfs 命令行参数；label 为空时省略卷标。
+func mkfsArgs(fsType, label, device string) []string {
+	switch fsType {
+	case "ext4":
+		if label == "" {
+			return []string{"-F", device}
+		}
+		return []string{"-F", "-L", label, device}
+	case "vfat":
+		if label == "" {
+			return []string{"-F", "32", device}
+		}
+		return []string{"-F", "32", "-n", label, device}
+	case "ntfs":
+		if label == "" {
+			return []string{"-f", "-q", device}
+		}
+		return []string{"-f", "-q", "-L", label, device}
+	case "exfat":
+		if label == "" {
+			return []string{device}
+		}
+		return []string{"-n", label, device}
+	}
+	return []string{device}
+}
+
+// hasTool 检查节点上是否存在某命令（command -v）。
+func hasTool(ctx context.Context, ex executor.Executor, tool string) bool {
+	r, err := ex.Exec(ctx, "sh", "-c", "command -v "+tool+" >/dev/null 2>&1")
+	if err != nil {
+		return false
+	}
+	return r.ExitCode == 0
+}
+
+// Format 格式化设备为指定文件系统（可选卷标）。
+// 安全约束：拒绝系统盘/系统分区；文件系统须为白名单内；无法识别系统盘时拒绝操作。
+func (m *Manager) Format(ctx context.Context, n *store.Node, device, fsType, label string) error {
+	if err := validateDevice(device); err != nil {
+		return err
+	}
+	fsType = strings.ToLower(strings.TrimSpace(fsType))
+	if !allowedFS[fsType] {
+		return fmt.Errorf("不支持的文件系统: %s（仅支持 ext4/vfat/ntfs/exfat）", fsType)
+	}
+	if label != "" {
+		if strings.HasPrefix(label, "-") || strings.ContainsAny(label, forbiddenChars) {
+			return fmt.Errorf("卷标非法: %q", label)
+		}
+	}
+	ex, err := m.execFor(n)
+	if err != nil {
+		return err
+	}
+	// 必须能识别系统盘，否则拒绝以防误删数据。
+	rootDisk, err := rootDiskPath(ctx, ex)
+	if err != nil {
+		return fmt.Errorf("无法确定系统盘，为防误删拒绝格式化: %w", err)
+	}
+	if isSystemDevice(device, rootDisk) {
+		return fmt.Errorf("禁止格式化系统盘或系统分区: %s", device)
+	}
+	// 若已挂载则先卸载，避免设备忙。
+	if r, e := ex.Exec(ctx, "umount", "-f", device); e == nil && r.ExitCode != 0 {
+		_ = r // 可能本来未挂载，忽略
+	}
+	tool := mkfsToolName(fsType)
+	if !hasTool(ctx, ex, tool) {
+		return fmt.Errorf("节点缺少格式化工具 %s（请先执行 apt install %s 后重试）", tool, mkfsPkg(fsType))
+	}
+	if r, e := ex.Exec(ctx, tool, mkfsArgs(fsType, label, device)...); e != nil {
+		return fmt.Errorf("格式化失败: %w", e)
+	} else if r.ExitCode != 0 {
+		out := strings.TrimSpace(r.Output)
+		if r.ExitCode == 127 || strings.Contains(out, "not found") {
+			return fmt.Errorf("节点缺少格式化工具 %s（请先执行 apt install %s 后重试）", tool, mkfsPkg(fsType))
+		}
+		return fmt.Errorf("格式化失败: %s", out)
+	}
+	return nil
+}
+
+// Partition 在整盘上重建分区表（gpt/msdos）并创建一个占满全盘的主分区。
+// 安全约束：拒绝系统盘；仅允许对整个磁盘操作；无法识别系统盘时拒绝操作。
+func (m *Manager) Partition(ctx context.Context, n *store.Node, device, scheme string) error {
+	if err := validateDevice(device); err != nil {
+		return err
+	}
+	scheme = strings.ToLower(strings.TrimSpace(scheme))
+	if scheme != "gpt" && scheme != "msdos" {
+		return fmt.Errorf("不支持的分区表类型: %s（仅支持 gpt/msdos）", scheme)
+	}
+	ex, err := m.execFor(n)
+	if err != nil {
+		return err
+	}
+	rootDisk, err := rootDiskPath(ctx, ex)
+	if err != nil {
+		return fmt.Errorf("无法确定系统盘，为防误删拒绝分区: %w", err)
+	}
+	if isSystemDevice(device, rootDisk) {
+		return fmt.Errorf("禁止对系统盘重新分区: %s", device)
+	}
+	// 仅允许对整盘操作，拒绝分区。
+	if r, e := ex.Exec(ctx, "lsblk", "-no", "TYPE", device); e == nil {
+		t := strings.TrimSpace(r.Output)
+		if t == "part" {
+			return fmt.Errorf("%s 是分区而非整盘，请对整个磁盘（如 /dev/sdb）执行分区", device)
+		}
+	}
+	// 尽力卸载该盘上的已有分区。
+	ex.Exec(ctx, "sh", "-c", "for p in $(lsblk -ln -o PATH "+device+" | tail -n +2); do umount -f \"$p\" 2>/dev/null; done")
+	if r, e := ex.Exec(ctx, "parted", "-s", device, "mklabel", scheme); e != nil {
+		return fmt.Errorf("创建分区表失败: %w", e)
+	} else if r.ExitCode != 0 {
+		return fmt.Errorf("创建分区表失败: %s", strings.TrimSpace(r.Output))
+	}
+	if r, e := ex.Exec(ctx, "parted", "-s", device, "mkpart", "primary", "ext4", "0%", "100%"); e != nil {
+		return fmt.Errorf("创建分区失败: %w", e)
+	} else if r.ExitCode != 0 {
+		return fmt.Errorf("创建分区失败: %s", strings.TrimSpace(r.Output))
+	}
+	ex.Exec(ctx, "partprobe", device)
 	return nil
 }

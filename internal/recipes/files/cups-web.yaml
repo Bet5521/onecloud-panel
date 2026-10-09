@@ -3,17 +3,68 @@ id: cups-web
 name: CUPS Web 打印
 category: 外设
 icon: printer
-description: 自带 CUPS 的网页打印服务：浏览器上传文件即可打印，内置 Office→PDF 转换，支持多用户登录。使用 host 网络以便 mDNS/AirPrint 广播，因此会直接占用 631（与「CUPS 打印服务」互斥，两者只装其一）与 1180 端口。
+description: 自带 CUPS 的网页打印服务：浏览器上传文件即可打印，内置 Office→PDF 转换，支持多用户登录。直装优先（需系统已装 CUPS，自动拉起 cupsd），容器方式为兜底。Web 端口 1180，CUPS 端口 631（与「CUPS 打印服务」互斥，两者只装其一）。
 homepage: https://github.com/hanxi/cups-web
-methods: [docker]
+methods: [native, docker]
 ports:
   - {port: 1180, proto: tcp, description: Web 界面}
-  - {port: 631, proto: tcp, description: 容器内置 CUPS（host 网络下直接占用）}
+  - {port: 631, proto: tcp, description: CUPS（直装下为系统 cupsd，容器下为内置）}
 healthcheck: {type: http, port: 1180, path: /}
 variables:
   - {key: cups_admin, name: CUPS 管理员账号, type: string, default: print}
   - {key: cups_password, name: CUPS 管理员密码, type: string, default: print, description: 安装后请立即修改}
   - {key: tz, name: 时区, type: string, default: Asia/Shanghai}
+  - {key: cups_web_version, name: 版本, type: string, default: v0.2.15, description: 发布版本标签}
+  - {key: cups_web_home, name: 数据目录, type: string, default: /var/lib/cups-web}
+native:
+  arches: [armv7l, aarch64, x86_64]
+  unit_name: cups-web.service
+  unit_template: |
+    [Unit]
+    Description=CUPS Web 打印管理
+    After=network-online.target cups.service
+    Wants=network-online.target
+
+    [Service]
+    Type=simple
+    Environment=CUPSADMIN={{.Vars.cups_admin}}
+    Environment=CUPSPASSWORD={{.Vars.cups_password}}
+    Environment=TZ={{.Vars.tz}}
+    Environment=LISTEN_ADDR=:1180
+    WorkingDirectory={{.Vars.cups_web_home}}
+    ExecStartPre=/usr/bin/systemctl start cups.service
+    ExecStart=/usr/local/bin/cups-web
+    Restart=on-failure
+    RestartSec=5s
+
+    [Install]
+    WantedBy=multi-user.target
+  install_steps:
+    - name: 安装 CUPS 与打印生态
+      apt: [cups, cups-client, cups-bsd, foomatic-db-compressed-ppds]
+    - name: 建数据目录
+      mkdir:
+        - "{{.Vars.cups_web_home}}"
+    - name: 下载 cups-web 二进制
+      download:
+        url: https://github.com/hanxi/cups-web/releases/download/{{.Vars.cups_web_version}}/cups-web-linux-{{.Node.ArchV7}}
+        dest: /usr/local/bin/cups-web
+        mode: 0755
+    - name: 创建 CUPS 管理员账号
+      exec:
+        command: sh
+        args:
+          - -c
+          - |
+            if ! id "{{.Vars.cups_admin}}" >/dev/null 2>&1; then
+              useradd -r -G lpadmin -M "{{.Vars.cups_admin}}"
+            fi
+            echo "{{.Vars.cups_admin}}:{{.Vars.cups_password}}" | chpasswd
+    - name: 启用并启动系统 CUPS
+      systemctl: {action: enable, unit: cups.service}
+  uninstall_steps:
+    - name: 删除程序与数据
+      exec: {command: rm, args: ["-rf", "/usr/local/bin/cups-web", "{{.Vars.cups_web_home}}"]}
 docker:
   arches: [armv7l, aarch64, x86_64]
   image: hanxi/cups-web:latest

@@ -1,0 +1,62 @@
+api_version: 1
+id: ddns-go
+name: DDNS-GO
+category: 网络
+icon: globe
+description: 简单好用的 DDNS 动态域名服务：支持阿里云/腾讯云/Cloudflare/华为云等数十家 DNS 提供商，自动同步公网 IP 到域名，自带 Web 管理界面（默认 9876）。直装优先（下载官方二进制），容器方式为兜底。
+homepage: https://github.com/jeessy2/ddns-go
+methods: [native, docker]
+ports:
+  - {port: 9876, proto: tcp, description: Web 管理界面}
+healthcheck: {type: http, port: 9876, path: /}
+variables:
+  - {key: ddns_go_version, name: 版本, type: string, default: 6.17.7, description: 发布版本号（不含 v 前缀），如 6.17.7}
+  - {key: ddns_go_conf, name: 配置目录, type: string, default: /etc/ddns-go}
+native:
+  arches: [armv7l, aarch64, x86_64, i386]
+  unit_name: ddns-go.service
+  unit_template: |
+    [Unit]
+    Description=DDNS-GO
+    After=network-online.target
+    Wants=network-online.target
+
+    [Service]
+    Type=simple
+    ExecStart=/usr/local/bin/ddns-go -l :9876 -f {{.Vars.ddns_go_conf}}/ddns-go.yaml
+    Restart=on-failure
+    RestartSec=5s
+
+    [Install]
+    WantedBy=multi-user.target
+  install_steps:
+    - name: 建配置目录
+      mkdir:
+        - "{{.Vars.ddns_go_conf}}"
+    - name: 下载发布包
+      download:
+        url: https://github.com/jeessy2/ddns-go/releases/download/v{{.Vars.ddns_go_version}}/ddns-go_{{.Vars.ddns_go_version}}_linux_{{$.Node.ArchPkg}}.tar.gz
+        dest: /tmp/ddns-go.tar.gz
+    - name: 解压并安装 ddns-go
+      exec:
+        command: sh
+        args:
+          - -c
+          - |
+            tar xzf /tmp/ddns-go.tar.gz -C /tmp
+            if [ ! -f /tmp/ddns-go ]; then
+              echo "未找到 ddns-go 二进制"; exit 1
+            fi
+            install -m 0755 /tmp/ddns-go /usr/local/bin/ddns-go
+            rm -f /tmp/ddns-go.tar.gz
+  uninstall_steps:
+    - name: 删除程序与配置
+      exec: {command: rm, args: ["-rf", "/usr/local/bin/ddns-go", "{{.Vars.ddns_go_conf}}"]}
+docker:
+  arches: [armv7l, aarch64, x86_64, i386]
+  image: jeessy2/ddns-go:latest
+  ports: ["9876:9876"]
+  restart_policy: unless-stopped
+  install_steps:
+    - name: 建配置目录
+      mkdir: [/etc/ddns-go]

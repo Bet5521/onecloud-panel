@@ -13,6 +13,7 @@ type NodeFacts struct {
 	ArchGO     string // go 工具链风格（arm-7/arm64/amd64/386），供 Gitea 等使用
 	ArchRel    string // 常见发布包后缀（arm/arm64/amd64/386），供 cloudflared/verysync/syncthing 等使用
 	ArchV7     string // armv7 显式风格（armv7/arm64/amd64/386），供 AdGuard/mihomo 等使用
+	ArchPkg    string // 发布包后缀（x86_64/arm64/armv7/i386），供 lucky/ddns-go 等使用
 	ArchDocker string
 }
 
@@ -61,26 +62,31 @@ func NodeFactsForArch(arch, hostname string) NodeFacts {
 		f.ArchGO = "arm-7"
 		f.ArchRel = "arm"
 		f.ArchV7 = "armv7"
+		f.ArchPkg = "armv7"
 		f.ArchDocker = "arm/v7"
 	case "aarch64":
 		f.ArchGO = "arm64"
 		f.ArchRel = "arm64"
 		f.ArchV7 = "arm64"
+		f.ArchPkg = "arm64"
 		f.ArchDocker = "arm64/v8"
 	case "x86_64":
 		f.ArchGO = "amd64"
 		f.ArchRel = "amd64"
 		f.ArchV7 = "amd64"
+		f.ArchPkg = "x86_64"
 		f.ArchDocker = "amd64"
 	case "i386":
 		f.ArchGO = "386"
 		f.ArchRel = "386"
 		f.ArchV7 = "386"
+		f.ArchPkg = "i386"
 		f.ArchDocker = "386"
 	default:
 		f.ArchGO = arch
 		f.ArchRel = arch
 		f.ArchV7 = arch
+		f.ArchPkg = arch
 		f.ArchDocker = arch
 	}
 	return f

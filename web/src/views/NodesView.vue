@@ -176,6 +176,8 @@
                 <span class="mono">{{ row.path }}</span>
                 <el-tag v-if="row.removable" size="small" type="warning" effect="plain"
                   style="margin-left:6px">可移除</el-tag>
+                <el-tag v-if="row.system" size="small" type="danger" effect="plain"
+                  style="margin-left:6px">系统盘</el-tag>
               </template>
             </el-table-column>
             <el-table-column label="型号" min-width="110" show-overflow-tooltip>
@@ -187,22 +189,30 @@
             <el-table-column label="文件系统" width="90">
               <template #default="{ row }">{{ row.fstype || '-' }}</template>
             </el-table-column>
+            <el-table-column label="卷标" min-width="90" show-overflow-tooltip>
+              <template #default="{ row }">{{ row.label || '-' }}</template>
+            </el-table-column>
             <el-table-column label="挂载点" min-width="110" show-overflow-tooltip>
               <template #default="{ row }">
                 <span :class="{ mono: row.mountpoint }">{{ row.mountpoint || '-' }}</span>
               </template>
             </el-table-column>
-            <el-table-column v-if="can('node:write')" label="操作" width="150" fixed="right">
+            <el-table-column v-if="can('node:write')" label="操作" width="250" fixed="right">
               <template #default="{ row }">
                 <el-button v-if="!row.mountpoint" link type="primary" :disabled="!row.fstype"
                   @click="openMount(row)">挂载</el-button>
                 <el-button v-else link type="warning" @click="unmountDevice(row)">卸载</el-button>
                 <el-button link type="primary" :disabled="!row.fstype"
                   @click="openAuto(row)">自启</el-button>
+                <el-button link type="success" :disabled="row.system"
+                  @click="openFormat(row)">格式化</el-button>
+                <el-button link type="success" :disabled="row.system || row.type !== 'disk'"
+                  @click="openPartition(row)">分区</el-button>
               </template>
             </el-table-column>
           </el-table>
           <div class="hint" style="margin-top:6px">自启将写入 /etc/fstab（nofail 模式，设备缺失不阻塞启动），修改前自动备份到 /etc/fstab.ocp.bak</div>
+          <div class="hint" style="margin-top:4px">格式化与分区仅对非系统盘可用；系统盘及其分区已自动禁用按钮，以防误删数据。</div>
         </el-card>
 
         <!-- 防火墙 -->
@@ -466,6 +476,55 @@
       <template #footer>
         <el-button @click="autoVisible = false">取消</el-button>
         <el-button type="primary" :loading="storageSubmitting" @click="submitAuto">保存</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 格式化设备 -->
+    <el-dialog v-model="formatVisible" title="格式化设备" width="480px" destroy-on-close>
+      <el-alert type="warning" :closable="false" show-icon style="margin-bottom:12px"
+        title="此操作将清除该设备上的全部数据且不可恢复！" />
+      <el-form label-width="90px">
+        <el-form-item label="设备">
+          <span class="mono">{{ formatTarget.path }}</span>
+          <el-tag v-if="formatTarget.system" size="small" type="danger" effect="plain"
+            style="margin-left:6px">系统盘</el-tag>
+        </el-form-item>
+        <el-form-item label="文件系统">
+          <el-select v-model="formatForm.fstype" style="width:100%">
+            <el-option label="ext4（Linux 推荐）" value="ext4" />
+            <el-option label="vfat（FAT32，跨平台 U 盘）" value="vfat" />
+            <el-option label="ntfs（Windows 大文件）" value="ntfs" />
+            <el-option label="exfat（跨平台大文件）" value="exfat" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="卷标">
+          <el-input v-model="formatForm.label" placeholder="可选，如 SD-CARD" maxlength="32" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="formatVisible = false">取消</el-button>
+        <el-button type="danger" :loading="storageSubmitting" @click="submitFormat">格式化</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 重新分区 -->
+    <el-dialog v-model="partitionVisible" title="重新分区" width="480px" destroy-on-close>
+      <el-alert type="warning" :closable="false" show-icon style="margin-bottom:12px"
+        title="此操作将重建分区表并清除整盘数据，且不可恢复！" />
+      <el-form label-width="90px">
+        <el-form-item label="设备">
+          <span class="mono">{{ partitionTarget.path }}</span>
+        </el-form-item>
+        <el-form-item label="分区表">
+          <el-select v-model="partitionForm.scheme" style="width:100%">
+            <el-option label="GPT（推荐，>2TB / 现代设备）" value="gpt" />
+            <el-option label="MBR（兼容旧设备）" value="msdos" />
+          </el-select>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="partitionVisible = false">取消</el-button>
+        <el-button type="danger" :loading="storageSubmitting" @click="submitPartition">重新分区</el-button>
       </template>
     </el-dialog>
 
@@ -753,6 +812,90 @@ async function submitAuto() {
     loadStorage()
   } catch (e) {
     showErr(e, '设置失败')
+  } finally {
+    storageSubmitting.value = false
+  }
+}
+
+// ---- 存储管理：格式化 / 分区 ----
+const formatVisible = ref(false)
+const partitionVisible = ref(false)
+const formatTarget = ref({})
+const partitionTarget = ref({})
+const formatForm = ref({ fstype: 'ext4', label: '' })
+const partitionForm = ref({ scheme: 'gpt' })
+
+function openFormat(row) {
+  if (row.system) {
+    ElMessage.warning('系统盘禁止格式化')
+    return
+  }
+  formatTarget.value = row
+  formatForm.value = { fstype: 'ext4', label: row.label || '' }
+  formatVisible.value = true
+}
+
+async function submitFormat() {
+  const t = formatTarget.value
+  if (!t.path) return
+  try {
+    await ElMessageBox.confirm(
+      `确认将 ${t.path} 格式化为 ${formatForm.value.fstype}？该操作会清除设备上的全部数据且不可恢复。`,
+      '格式化设备', { type: 'warning' }
+    )
+  } catch {
+    return
+  }
+  storageSubmitting.value = true
+  try {
+    await post('/api/nodes/' + cur.value.id + '/storage/format', {
+      device: t.path, fstype: formatForm.value.fstype, label: formatForm.value.label
+    })
+    ElMessage.success('格式化成功')
+    formatVisible.value = false
+    loadStorage()
+  } catch (e) {
+    showErr(e, '格式化失败')
+  } finally {
+    storageSubmitting.value = false
+  }
+}
+
+function openPartition(row) {
+  if (row.system) {
+    ElMessage.warning('系统盘禁止重新分区')
+    return
+  }
+  if (row.type !== 'disk') {
+    ElMessage.warning('分区只能对整个磁盘操作（如 /dev/sdb），请选择磁盘本身而非其分区')
+    return
+  }
+  partitionTarget.value = row
+  partitionForm.value = { scheme: 'gpt' }
+  partitionVisible.value = true
+}
+
+async function submitPartition() {
+  const t = partitionTarget.value
+  if (!t.path) return
+  try {
+    await ElMessageBox.confirm(
+      `确认对 ${t.path} 重建分区表（${partitionForm.value.scheme.toUpperCase()}）？该操作会清除整盘数据且不可恢复。`,
+      '重新分区', { type: 'warning' }
+    )
+  } catch {
+    return
+  }
+  storageSubmitting.value = true
+  try {
+    await post('/api/nodes/' + cur.value.id + '/storage/partition', {
+      device: t.path, scheme: partitionForm.value.scheme
+    })
+    ElMessage.success('分区完成，请刷新后对新建分区执行格式化')
+    partitionVisible.value = false
+    loadStorage()
+  } catch (e) {
+    showErr(e, '分区失败')
   } finally {
     storageSubmitting.value = false
   }

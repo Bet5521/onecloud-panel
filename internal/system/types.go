@@ -30,7 +30,21 @@ type HostInfo struct {
 	Interfaces  []NetInterface `json:"interfaces"`
 	Docker      bool           `json:"docker"`
 	DockerVer   string         `json:"docker_version"`
+	AgentVersion string        `json:"agent_version"`
+	Storage     []StorageDevice `json:"storage,omitempty"`
 	CollectedAt time.Time      `json:"collected_at"`
+}
+
+// StorageDevice 节点块存储设备（节点详情展示用）。
+// Class 取值：emmc / sd / usb / ssd / hdd / nvme / disk / unknown。
+type StorageDevice struct {
+	Name       string `json:"name"`        // 设备名，如 mmcblk0 / sda / nvme0n1
+	Model      string `json:"model"`       // 型号（可能为空）
+	Class      string `json:"class"`       // 分类关键字
+	ClassLabel string `json:"class_label"` // 中文展示：内置存储(eMMC)/SD卡/...
+	Removable  bool   `json:"removable"`
+	SizeBytes  int64  `json:"size_bytes"`
+	IsBoot     bool   `json:"is_boot"` // 是否为根文件系统所在设备
 }
 
 // CPUPercent 粗估 CPU 占用（百分比），由 load/cores 推算（0-100）。

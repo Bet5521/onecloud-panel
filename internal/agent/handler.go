@@ -5,6 +5,7 @@ import (
 	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
+	"log"
 	"net/http"
 	"os"
 	"strconv"
@@ -17,12 +18,14 @@ import (
 )
 
 type server struct {
-	exec executor.Executor
-	tok  *tokenHolder
+	exec       executor.Executor
+	tok        *tokenHolder
+	serverURL  string // 面板地址（来自注册时的 state.Server），用于解析相对下载 URL
+	unit       string // 自升级后重启所用的 systemd 单元名
 }
 
-func newServer(tok *tokenHolder) *server {
-	return &server{exec: executor.NewLocal(nil), tok: tok}
+func newServer(tok *tokenHolder, serverURL, unit string) *server {
+	return &server{exec: executor.NewLocal(nil), tok: tok, serverURL: serverURL, unit: unit}
 }
 
 func (s *server) mux() http.Handler {
@@ -42,6 +45,7 @@ func (s *server) mux() http.Handler {
 	protected.HandleFunc("GET /v1/file", s.readFile)
 	protected.HandleFunc("PUT /v1/file", s.writeFile)
 	protected.HandleFunc("POST /v1/download", s.download)
+	protected.HandleFunc("POST /v1/agent-upgrade", s.agentUpgrade)
 	protected.HandleFunc("POST /v1/healthcheck", s.healthcheck)
 	protected.HandleFunc("POST /v1/token/rotate", s.rotate)
 	// Docker Engine API 隧道（方法/路径白名单）
@@ -235,6 +239,7 @@ func (s *server) download(w http.ResponseWriter, r *http.Request) {
 		agentError(w, http.StatusBadRequest, "请求格式错误")
 		return
 	}
+	req.URL = s.resolveURL(req.URL)
 	mode := os.FileMode(req.Mode)
 	if mode == 0 {
 		mode = 0o755
@@ -249,6 +254,81 @@ func (s *server) download(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeAgentJSON(w, &DownloadResp{OK: true})
+}
+
+// resolveURL 将以 "/" 开头的相对路径解析为完整面板地址（节点已知 serverURL）。
+func (s *server) resolveURL(u string) string {
+	if !strings.HasPrefix(u, "/") {
+		return u
+	}
+	return strings.TrimRight(s.serverURL, "/") + u
+}
+
+// agentUpgrade 接收面板下发的升级指令：从相对 URL 下载新二进制，原子替换自身后重启单元。
+// 由于重启会终止本进程，下载与替换先同步完成并响应，再延迟触发重启。
+func (s *server) agentUpgrade(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		URL    string `json:"url"`
+		SHA256 string `json:"sha256"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.URL == "" {
+		agentError(w, http.StatusBadRequest, "请求格式错误")
+		return
+	}
+	full := s.resolveURL(req.URL)
+	go s.doUpgrade(full, req.SHA256)
+	writeAgentJSON(w, map[string]string{"status": "upgrade_started"})
+}
+
+func (s *server) doUpgrade(fullURL, sha string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	dl, ok := s.exec.(executor.Downloader)
+	if !ok {
+		log.Printf("升级: 执行器不支持下载，放弃")
+		return
+	}
+	tmp, err := os.CreateTemp("", "ocp-upgrade-*.bin")
+	if err != nil {
+		log.Printf("升级: 创建临时文件失败: %v", err)
+		return
+	}
+	tmpPath := tmp.Name()
+	_ = tmp.Close()
+	defer os.Remove(tmpPath)
+
+	if err := dl.Download(ctx, fullURL, tmpPath, 0o755, sha, nil); err != nil {
+		log.Printf("升级: 下载失败: %v", err)
+		return
+	}
+
+	exe, err := os.Executable()
+	if err != nil {
+		log.Printf("升级: 定位自身二进制失败: %v", err)
+		return
+	}
+	// 原子替换：rename 在同一文件系统上交换目录项，运行中的旧进程仍持有旧 inode。
+	if err := os.Rename(tmpPath, exe); err != nil {
+		// 跨设备时回退为复制覆盖
+		if cpErr := copyFile(exe, tmpPath); cpErr != nil {
+			log.Printf("升级: 替换二进制失败: rename=%v cp=%v", err, cpErr)
+			return
+		}
+	}
+	log.Printf("升级: 二进制已更新，即将重启单元 %s", s.unit)
+	// 略作延迟，确保上面的 HTTP 响应已发出
+	time.Sleep(500 * time.Millisecond)
+	_, _ = s.exec.Exec(context.Background(), "systemctl", "restart", s.unit)
+}
+
+// copyFile 将 src 复制到 dst 路径（覆盖），用于跨设备替换场景。
+func copyFile(dst, src string) error {
+	b, err := os.ReadFile(src)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(dst, b, 0o755)
 }
 
 func (s *server) healthcheck(w http.ResponseWriter, r *http.Request) {

@@ -1,7 +1,9 @@
 package store
 
 import (
+	"crypto/sha256"
 	"database/sql"
+	"encoding/base64"
 	"errors"
 )
 
@@ -14,14 +16,16 @@ func (s *Store) CreateNode(n *Node) (int64, error) {
 		`INSERT INTO nodes
 		 (name, mode, status, network_type, address, alt_address, agent_token_hash,
 		  hostname, os_name, os_version, kernel, arch, cpu_cores, mem_total, docker_version,
-		  docker_mirrors, docker_insecure_registries, last_seen, owner_user_id,
-		  tags, node_group, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		  docker_mirrors, docker_insecure_registries, agent_version, storage_json, auto_upgrade,
+		  last_seen, owner_user_id, tags, node_group,
+		  created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		n.Name, n.Mode, n.Status, n.NetworkType, n.Address, n.AltAddress,
 		n.AgentTokenHash, n.Hostname, n.OSName, n.OSVersion, n.Kernel, n.Arch,
 		n.CPUCores, n.MemTotal, n.DockerVersion,
-		n.DockerMirrors, n.DockerInsecureRegistries, n.LastSeen, n.OwnerUserID,
-		n.Tags, n.Group,
+		n.DockerMirrors, n.DockerInsecureRegistries, n.AgentVersion, n.StorageJSON,
+		b2i(n.AutoUpgrade),
+		n.LastSeen, n.OwnerUserID, n.Tags, n.Group,
 		n.CreatedAt, n.UpdatedAt)
 	if err != nil {
 		return 0, err
@@ -44,8 +48,9 @@ func (s *Store) ListNodes() ([]Node, error) {
 	rows, err := s.DB.Query(
 		`SELECT id, name, mode, status, network_type, address, alt_address, agent_token_hash,
 		        hostname, os_name, os_version, kernel, arch, cpu_cores, mem_total, docker_version,
-		        docker_mirrors, docker_insecure_registries, last_seen, owner_user_id,
-		        tags, node_group, created_at, updated_at
+		        docker_mirrors, docker_insecure_registries, agent_version, storage_json, auto_upgrade,
+		        last_seen, owner_user_id, tags, node_group,
+		        created_at, updated_at
 		 FROM nodes ORDER BY (mode = 'local') DESC, id ASC`)
 	if err != nil {
 		return nil, err
@@ -66,7 +71,8 @@ type NodeListFilter struct {
 func (s *Store) ListNodesFiltered(f NodeListFilter) ([]Node, error) {
 	q := `SELECT id, name, mode, status, network_type, address, alt_address, agent_token_hash,
 		        hostname, os_name, os_version, kernel, arch, cpu_cores, mem_total, docker_version,
-		        docker_mirrors, docker_insecure_registries, last_seen, owner_user_id, created_at, updated_at
+		        docker_mirrors, docker_insecure_registries, agent_version, storage_json, auto_upgrade,
+		        last_seen, owner_user_id, tags, node_group, created_at, updated_at
 		  FROM nodes`
 	var conds []string
 	var args []any
@@ -128,12 +134,12 @@ func (s *Store) SetNodeTags(id int64, tags string) error {
 func (s *Store) UpdateNodeInfo(id int64, n *Node) error {
 	_, err := s.DB.Exec(
 		`UPDATE nodes SET hostname=?, os_name=?, os_version=?, kernel=?, arch=?,
-		   cpu_cores=?, mem_total=?, docker_version=?, last_seen=?,
+		   cpu_cores=?, mem_total=?, docker_version=?, agent_version=?, storage_json=?, last_seen=?,
 		   network_type = CASE WHEN ? <> '' THEN ? ELSE network_type END,
 		   updated_at=?
 		 WHERE id=?`,
 		n.Hostname, n.OSName, n.OSVersion, n.Kernel, n.Arch,
-		n.CPUCores, n.MemTotal, n.DockerVersion, n.LastSeen,
+		n.CPUCores, n.MemTotal, n.DockerVersion, n.AgentVersion, n.StorageJSON, n.LastSeen,
 		n.NetworkType, n.NetworkType, now(), id)
 	return err
 }
@@ -185,18 +191,21 @@ func (s *Store) DeleteNode(id int64) error {
 func (s *Store) node(where string, args ...any) (*Node, error) {
 	q := `SELECT id, name, mode, status, network_type, address, alt_address, agent_token_hash,
 	             hostname, os_name, os_version, kernel, arch, cpu_cores, mem_total, docker_version,
-	             docker_mirrors, docker_insecure_registries, last_seen, owner_user_id,
-	             tags, node_group, created_at, updated_at
+	             docker_mirrors, docker_insecure_registries, agent_version, storage_json, auto_upgrade,
+	             last_seen, owner_user_id, tags, node_group,
+	             created_at, updated_at
 	      FROM nodes ` + where
 	n := &Node{}
 	var owner sql.NullInt64
+	var autoUpgrade int64
 	err := s.DB.QueryRow(q, args...).Scan(
 		&n.ID, &n.Name, &n.Mode, &n.Status, &n.NetworkType, &n.Address, &n.AltAddress,
 		&n.AgentTokenHash, &n.Hostname, &n.OSName, &n.OSVersion, &n.Kernel, &n.Arch,
 		&n.CPUCores, &n.MemTotal, &n.DockerVersion,
-		&n.DockerMirrors, &n.DockerInsecureRegistries, &n.LastSeen, &owner,
-		&n.Tags, &n.Group,
+		&n.DockerMirrors, &n.DockerInsecureRegistries, &n.AgentVersion, &n.StorageJSON, &autoUpgrade,
+		&n.LastSeen, &owner, &n.Tags, &n.Group,
 		&n.CreatedAt, &n.UpdatedAt)
+	n.AutoUpgrade = autoUpgrade != 0
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNodeNotFound
 	}
@@ -221,15 +230,17 @@ func scanNodes(rows *sql.Rows) ([]Node, error) {
 	for rows.Next() {
 		var n Node
 		var owner sql.NullInt64
+		var autoUpgrade int64
 		if err := rows.Scan(
 			&n.ID, &n.Name, &n.Mode, &n.Status, &n.NetworkType, &n.Address, &n.AltAddress,
 			&n.AgentTokenHash, &n.Hostname, &n.OSName, &n.OSVersion, &n.Kernel, &n.Arch,
 			&n.CPUCores, &n.MemTotal, &n.DockerVersion,
-			&n.DockerMirrors, &n.DockerInsecureRegistries, &n.LastSeen, &owner,
-			&n.Tags, &n.Group,
+			&n.DockerMirrors, &n.DockerInsecureRegistries, &n.AgentVersion, &n.StorageJSON, &autoUpgrade,
+			&n.LastSeen, &owner, &n.Tags, &n.Group,
 			&n.CreatedAt, &n.UpdatedAt); err != nil {
 			return nil, err
 		}
+		n.AutoUpgrade = autoUpgrade != 0
 		if owner.Valid {
 			v := owner.Int64
 			n.OwnerUserID = &v
@@ -245,4 +256,28 @@ func (s *Store) UpdateNodeDockerConfig(id int64, mirrors, insecure string) error
 		`UPDATE nodes SET docker_mirrors=?, docker_insecure_registries=?, updated_at=? WHERE id=?`,
 		mirrors, insecure, now(), id)
 	return err
+}
+
+// SetNodeAutoUpgrade 更新节点「自动升级」开关。
+func (s *Store) SetNodeAutoUpgrade(id int64, on bool) error {
+	_, err := s.DB.Exec(`UPDATE nodes SET auto_upgrade=?, updated_at=? WHERE id=?`, b2i(on), now(), id)
+	return err
+}
+
+// GetNodeByToken 按节点长期 Token 明文查询（用于校验 /api/agent-binary 下载请求）。
+func (s *Store) GetNodeByToken(plain string) (*Node, error) {
+	return s.node("WHERE agent_token_hash = ?", hashToken(plain))
+}
+
+func b2i(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
+}
+
+// hashToken 与 node 服务一致的 Token 哈希算法（sha256 + RawURLEncoding）。
+func hashToken(s string) string {
+	sum := sha256.Sum256([]byte(s))
+	return base64.RawURLEncoding.EncodeToString(sum[:])
 }

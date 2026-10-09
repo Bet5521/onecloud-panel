@@ -3,7 +3,10 @@ package api
 import (
 	"encoding/json"
 	"fmt"
+	"io"
+	"log"
 	"net/http"
+	"os"
 	"strconv"
 	"time"
 
@@ -13,6 +16,7 @@ import (
 	"onecloud-panel/internal/node"
 	"onecloud-panel/internal/notify"
 	"onecloud-panel/internal/store"
+	"onecloud-panel/internal/system"
 )
 
 // NodeDTO 节点对外结构：附加在线/可达状态。
@@ -38,8 +42,11 @@ type NodeDTO struct {
 	OwnerUserID              *int64 `json:"owner_user_id"`
 	Online                   bool   `json:"online"`
 	Reachable                bool   `json:"reachable"`
-	Tags                     string `json:"tags"`
-	Group                    string `json:"node_group"`
+	Tags                     string                  `json:"tags"`
+	Group                    string                  `json:"node_group"`
+	AgentVersion             string                  `json:"agent_version"`
+	Storage                  []system.StorageDevice  `json:"storage,omitempty"`
+	AutoUpgrade              bool                    `json:"auto_upgrade"`
 }
 
 func toDTO(n *store.Node) NodeDTO {
@@ -51,9 +58,17 @@ func toDTO(n *store.Node) NodeDTO {
 		MemTotal: n.MemTotal, Docker: n.DockerVersion,
 		DockerMirrors: n.DockerMirrors, DockerInsecureRegistries: n.DockerInsecureRegistries,
 		LastSeen: n.LastSeen, OwnerUserID: n.OwnerUserID,
-		Tags:     n.Tags,
-		Group:    n.Group,
-		Online:   n.Mode == "local" || node.IsOnline(n.LastSeen),
+		Tags:         n.Tags,
+		Group:        n.Group,
+		AgentVersion: n.AgentVersion,
+		AutoUpgrade:  n.AutoUpgrade,
+		Online:       n.Mode == "local" || node.IsOnline(n.LastSeen),
+	}
+	if n.StorageJSON != "" && n.StorageJSON != "[]" {
+		var st []system.StorageDevice
+		if err := json.Unmarshal([]byte(n.StorageJSON), &st); err == nil {
+			d.Storage = st
+		}
 	}
 	if n.Address != "" {
 		d.Reachable = node.CheckReachability(n.Address, 2*time.Second)
@@ -223,6 +238,7 @@ type updateNodeReq struct {
 	Status      string  `json:"status"`
 	Tags        *string `json:"tags"`
 	Group       *string `json:"node_group"`
+	AutoUpgrade *bool   `json:"auto_upgrade"`
 }
 
 func (a *API) updateNode(w http.ResponseWriter, r *http.Request) {
@@ -273,6 +289,11 @@ func (a *API) updateNode(w http.ResponseWriter, r *http.Request) {
 	if req.Group != nil {
 		if err := a.store.SetNodeGroup(id, *req.Group); err == nil {
 			n.Group = *req.Group
+		}
+	}
+	if req.AutoUpgrade != nil {
+		if err := a.store.SetNodeAutoUpgrade(id, *req.AutoUpgrade); err == nil {
+			n.AutoUpgrade = *req.AutoUpgrade
 		}
 	}
 	a.audit.Record(r, "node", "update", "node", strconv.FormatInt(id, 10), audit.ResultSuccess,
@@ -442,4 +463,60 @@ func (a *API) rotateNodeToken(w http.ResponseWriter, r *http.Request) {
 	a.audit.Record(r, "node", "rotate_token", "node",
 		strconv.FormatInt(id, 10), audit.ResultSuccess, "")
 	writeJSON(w, map[string]string{"token": newTok})
+}
+
+// ---- 节点 Agent 自升级 ----
+
+// POST /api/nodes/{id}/upgrade — 手动触发的节点 Agent 自升级。
+// 面板将自身正在运行的二进制作为升级包推送至节点 Agent，Agent 下载替换后重启自身单元。
+func (a *API) upgradeNode(w http.ResponseWriter, r *http.Request) {
+	id, err := idFromPath(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := a.nodes.UpgradeAgent(r.Context(), id); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	a.audit.Record(r, "node", "upgrade", "node", strconv.FormatInt(id, 10), audit.ResultSuccess, "")
+	writeJSON(w, map[string]string{"status": "upgrade_started"})
+}
+
+// GET /api/agent-binary — 向节点 Agent 提供面板自身二进制作为升级包。
+// 鉴权使用节点长期 Token（查询参数 t），无需登录会话（Agent 侧无会话态）。
+func (a *API) agentBinary(w http.ResponseWriter, r *http.Request) {
+	tok := r.URL.Query().Get("t")
+	if tok == "" {
+		writeError(w, http.StatusUnauthorized, "缺少 Token")
+		return
+	}
+	if _, err := a.store.GetNodeByToken(tok); err != nil {
+		writeError(w, http.StatusUnauthorized, "Token 无效")
+		return
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "定位二进制失败")
+		return
+	}
+	f, err := os.Open(exe)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "读取二进制失败")
+		return
+	}
+	defer f.Close()
+	fi, err := f.Stat()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "读取二进制信息失败")
+		return
+	}
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("Content-Length", strconv.FormatInt(fi.Size(), 10))
+	w.Header().Set("Content-Disposition", "attachment; filename=\"onecloud-panel-agent\"")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(http.StatusOK)
+	if _, err := io.Copy(w, f); err != nil {
+		log.Printf("agent-binary 下载写出失败: %v", err)
+	}
 }

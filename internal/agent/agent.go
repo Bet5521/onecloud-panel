@@ -61,7 +61,7 @@ func Run(cfg *config.Agent) error {
 
 	srv := &http.Server{
 		Addr:              cfg.Listen,
-		Handler:           newServer(holder).mux(),
+		Handler:           newServer(holder, state.Server, cfg.Unit).mux(),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 

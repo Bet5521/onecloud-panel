@@ -85,6 +85,12 @@
             </el-tag>
           </template>
         </el-table-column>
+        <el-table-column label="Agent 版本" width="150">
+          <template #default="{ row }">
+            <span>{{ row.agent_version || '-' }}</span>
+            <el-tag v-if="row.agent_version && isBehind(row.agent_version)" size="small" type="warning" effect="plain" style="margin-left: 6px">可升级</el-tag>
+          </template>
+        </el-table-column>
         <el-table-column label="最后在线" width="130">
           <template #default="{ row }">{{ fmtAgo(row.last_seen) }}</template>
         </el-table-column>
@@ -169,6 +175,34 @@
               </el-table-column>
             </el-table>
           </template>
+        </el-card>
+
+        <!-- 存储识别 -->
+        <el-card v-if="cur.storage && cur.storage.length" shadow="never" class="section">
+          <template #header><span>存储设备</span></template>
+          <el-table :data="cur.storage" size="small">
+            <el-table-column prop="name" label="设备" width="120" />
+            <el-table-column label="类型" width="150">
+              <template #default="{ row }">
+                <el-tag size="small"
+                  :type="row.class === 'sd' ? 'warning' : (row.class === 'emmc' ? 'success' : 'info')"
+                  effect="plain">{{ row.class_label }}</el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column prop="model" label="型号" show-overflow-tooltip />
+            <el-table-column label="容量" width="120">
+              <template #default="{ row }">{{ fmtBytes(row.size_bytes) }}</template>
+            </el-table-column>
+            <el-table-column label="启动盘" width="80">
+              <template #default="{ row }">
+                <el-tag v-if="row.is_boot" size="small" type="danger" effect="plain">是</el-tag>
+                <span v-else class="muted">-</span>
+              </template>
+            </el-table-column>
+            <el-table-column label="可移动" width="80">
+              <template #default="{ row }">{{ row.removable ? '是' : '否' }}</template>
+            </el-table-column>
+          </el-table>
         </el-card>
 
         <!-- 标签与分组 -->
@@ -348,6 +382,29 @@
               按需安装 Docker
             </el-button>
           </el-space>
+        </el-card>
+
+        <!-- 节点 Agent 自升级 -->
+        <el-card v-if="cur.mode !== 'local'" shadow="never" class="section">
+          <template #header><span>节点升级（Agent 自升级）</span></template>
+          <el-descriptions :column="2" size="small" border>
+            <el-descriptions-item label="Agent 版本">{{ cur.agent_version || '未知' }}</el-descriptions-item>
+            <el-descriptions-item label="面板版本">{{ panelVersion || '未知' }}</el-descriptions-item>
+          </el-descriptions>
+          <el-alert v-if="isBehind(cur.agent_version)" type="warning" :closable="false" show-icon
+            style="margin: 10px 0" title="该节点 Agent 版本落后，可手动升级或开启自动升级" />
+          <el-space wrap style="margin-top: 8px">
+            <el-switch v-model="autoUpgrade" :disabled="!can('node:write')" active-text="自动升级"
+              @change="toggleAutoUpgrade" />
+            <el-button v-if="can('node:write')" type="primary" :loading="upgrading"
+              :disabled="!isBehind(cur.agent_version) && !autoForce" @click="upgradeAgent(cur)">
+              立即升级 Agent
+            </el-button>
+            <el-checkbox v-if="can('node:write')" v-model="autoForce">强制升级</el-checkbox>
+          </el-space>
+          <div class="hint" style="margin-top: 8px">
+            升级时面板将自身二进制推送至节点，Agent 下载替换后自重启；开启自动升级后心跳发现版本落后会自动触发
+          </div>
         </el-card>
 
         <!-- Docker 配置 -->
@@ -755,6 +812,8 @@ async function openDetail(row) {
   live.value = null
   liveErr.value = ''
   meta.value = { tags: cur.value.tags || '', group: cur.value.node_group || '' }
+  autoUpgrade.value = !!cur.value.auto_upgrade
+  autoForce.value = false
   loadLive()
   loadInstallations()
   loadStorage()
@@ -1338,6 +1397,77 @@ function closeTerminal() {
   teardownTerm()
   termState.value = 'form'
   termHostKey.value = ''
+}
+
+// ---- 节点 Agent 自升级 ----
+const panelVersion = ref('')
+const autoUpgrade = ref(false)
+const autoForce = ref(false)
+const upgrading = ref(false)
+
+async function loadPanelVersion() {
+  try {
+    const d = await get('/api/version')
+    panelVersion.value = d.version || ''
+  } catch {
+    panelVersion.value = ''
+  }
+}
+loadPanelVersion()
+
+function parseVer(s) {
+  if (!s) return [0, 0, 0]
+  const parts = String(s).replace(/^v/, '').split(/[-+]/)[0].split('.')
+  const out = [0, 0, 0]
+  for (let i = 0; i < 3; i++) out[i] = parseInt(parts[i] || '0', 10) || 0
+  return out
+}
+
+function isBehind(v) {
+  if (!v || !panelVersion.value) return false
+  if (v === 'dev' || panelVersion.value === 'dev') return false
+  const a = parseVer(v)
+  const b = parseVer(panelVersion.value)
+  for (let i = 0; i < 3; i++) {
+    if (a[i] < b[i]) return true
+    if (a[i] > b[i]) return false
+  }
+  return false
+}
+
+async function toggleAutoUpgrade(val) {
+  if (!cur.value) return
+  try {
+    await put('/api/nodes/' + cur.value.id, { auto_upgrade: !!val })
+    cur.value.auto_upgrade = !!val
+    ElMessage.success(val ? '已开启自动升级' : '已关闭自动升级')
+  } catch (e) {
+    autoUpgrade.value = !!cur.value.auto_upgrade
+    ElMessage.error(e.message || '保存失败')
+  }
+}
+
+async function upgradeAgent(row) {
+  if (!row) return
+  try {
+    await ElMessageBox.confirm(
+      '将把面板当前二进制推送到该节点，Agent 替换自身后重启服务，期间节点会短暂离线。确定继续？',
+      '升级 Agent',
+      { type: 'warning', confirmButtonText: '确定升级', cancelButtonText: '取消' }
+    )
+  } catch {
+    return
+  }
+  upgrading.value = true
+  try {
+    await post('/api/nodes/' + row.id + '/upgrade', {})
+    ElMessage.success('升级指令已下发，Agent 重启后将自动重连')
+    setTimeout(() => { load(); if (cur.value) loadLive() }, 8000)
+  } catch (e) {
+    ElMessage.error(e.message || '升级失败')
+  } finally {
+    upgrading.value = false
+  }
 }
 
 function pct(used, total) {

@@ -200,6 +200,7 @@ const typeOptions = {
   wecom: '企业微信机器人',
   dingtalk: '钉钉机器人',
   webhook: '通用 Webhook',
+  plusplus: 'PushPlus 推送加',
   sms: '短信'
 }
 
@@ -246,6 +247,9 @@ const fieldDefs = {
   ],
   webhook: [
     { key: 'url', label: 'URL', placeholder: '接收 POST {title, body} JSON 的 http(s) 地址' }
+  ],
+  plusplus: [
+    { key: 'token', label: 'Token', secret: true, placeholder: 'PushPlus 推送加 Token（官网 token 页获取）' }
   ]
 }
 

@@ -92,6 +92,9 @@ type Node struct {
 	DockerVersion            string
 	DockerMirrors            string
 	DockerInsecureRegistries string
+	AgentVersion             string
+	StorageJSON              string
+	AutoUpgrade              bool
 	LastSeen                 int64
 	OwnerUserID              *int64 // 节点归属用户；NULL=系统节点(如 local)，仅管理员可见
 	CreatedAt                int64

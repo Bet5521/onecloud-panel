@@ -308,6 +308,21 @@ func (c *Client) RotateToken(ctx context.Context, newToken string) error {
 	return nil
 }
 
+// UpgradeAgent 向 Agent 下发自升级指令；url 为相对面板地址的下载路径
+// （如 /api/agent-binary?t=...），由 Agent 解析为完整地址并下载替换自身。
+func (c *Client) UpgradeAgent(ctx context.Context, url string) error {
+	resp, err := c.req(ctx, http.MethodPost, "/v1/agent-upgrade", map[string]string{"url": url})
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		return fmt.Errorf("agent 升级返回 %d: %s", resp.StatusCode, strings.TrimSpace(string(b)))
+	}
+	return nil
+}
+
 // Tunnel 透传 Docker Engine API 请求到远程节点（无整体超时，由 ctx 控制）。
 // enginePath 形如 /containers/json。
 func (c *Client) Tunnel(ctx context.Context, method, enginePath string,

@@ -5,10 +5,15 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net"
+	"net/url"
 	"strconv"
+	"strings"
+	"sync"
 	"time"
 
 	"onecloud-panel/internal/agent"
@@ -17,6 +22,7 @@ import (
 	"onecloud-panel/internal/secretbox"
 	"onecloud-panel/internal/store"
 	"onecloud-panel/internal/system"
+	"onecloud-panel/internal/version"
 )
 
 // onlineWindow 最近心跳窗口。
@@ -36,11 +42,15 @@ func IsValidNetworkType(t string) bool { return isValidNetworkType(t) }
 type Service struct {
 	store *store.Store
 	box   *secretbox.Box
+
+	// upgradeMu / upgradeCooldown 限制自动升级的触发频率，避免心跳抖动导致重复推送。
+	upgradeMu       sync.Mutex
+	upgradeCooldown map[int64]time.Time
 }
 
 // New 创建节点服务。
 func New(s *store.Store, box *secretbox.Box) *Service {
-	return &Service{store: s, box: box}
+	return &Service{store: s, box: box, upgradeCooldown: make(map[int64]time.Time)}
 }
 
 // ---- 注册令牌 ----
@@ -193,8 +203,112 @@ func (s *Service) Heartbeat(req *agent.HeartbeatRequest) (*store.Node, error) {
 		if n.Status == "pending" {
 			// 心跳即证明存活；保持 pending 等管理员确认时改 active 由确认接口处理
 		}
+		s.maybeAutoUpgrade(n, req.Host)
 	}
 	return n, nil
+}
+
+// maybeAutoUpgrade 在心跳中发现节点 Agent 版本落后且开启自动升级时，触发升级。
+func (s *Service) maybeAutoUpgrade(n *store.Node, h *system.HostInfo) {
+	if !n.AutoUpgrade || h == nil || h.AgentVersion == "" {
+		return
+	}
+	if version.Version == "" || version.Version == "dev" {
+		return // 开发版本不做自动升级，避免循环
+	}
+	if !isOlder(h.AgentVersion, version.Version) {
+		return
+	}
+	s.upgradeMu.Lock()
+	last, ok := s.upgradeCooldown[n.ID]
+	now := time.Now()
+	if ok && now.Sub(last) < 10*time.Minute {
+		s.upgradeMu.Unlock()
+		return
+	}
+	s.upgradeCooldown[n.ID] = now
+	s.upgradeMu.Unlock()
+
+	go func(id int64) {
+		if err := s.UpgradeAgent(context.Background(), id); err != nil {
+			log.Printf("节点 %d 自动升级失败: %v", id, err)
+		}
+	}(n.ID)
+}
+
+// UpgradeAgent 向指定节点下发 Agent 自升级指令（面板自身二进制作为升级包推送）。
+func (s *Service) UpgradeAgent(ctx context.Context, id int64) error {
+	n, err := s.store.GetNode(id)
+	if err != nil {
+		return err
+	}
+	if n.Mode == "local" {
+		return errors.New("本机节点即面板自身，无需单独升级 Agent")
+	}
+	if n.Address == "" {
+		return errors.New("节点缺少地址")
+	}
+	if !IsOnline(n.LastSeen) {
+		return errors.New("节点离线，无法升级")
+	}
+	enc, err := s.store.GetNodeTokenEncrypted(id)
+	if err != nil || enc == "" {
+		return errors.New("缺少节点 Token")
+	}
+	tok, err := s.box.Open(enc)
+	if err != nil {
+		return errors.New("Token 解密失败")
+	}
+	cli := agentclient.New(n.Address, tok)
+	url := "/api/agent-binary?t=" + url.QueryEscape(tok)
+	if err := cli.UpgradeAgent(ctx, url); err != nil {
+		return fmt.Errorf("升级指令下发失败: %w", err)
+	}
+	return nil
+}
+
+// isOlder 判断版本 a 是否严格落后于版本 b（仅支持语义化版本，解析失败返回 false）。
+func isOlder(a, b string) bool {
+	va, errA := parseVersion(a)
+	vb, errB := parseVersion(b)
+	if errA != nil || errB != nil {
+		return false
+	}
+	for i := 0; i < 3; i++ {
+		if va[i] < vb[i] {
+			return true
+		}
+		if va[i] > vb[i] {
+			return false
+		}
+	}
+	return false
+}
+
+// parseVersion 解析主.次.修版本号为 [3]int，忽略 v 前缀与预发布后缀。
+func parseVersion(s string) ([3]int, error) {
+	var v [3]int
+	s = strings.TrimSpace(s)
+	s = strings.TrimPrefix(s, "v")
+	s = strings.TrimPrefix(s, "V")
+	if i := strings.IndexAny(s, "-+"); i >= 0 {
+		s = s[:i]
+	}
+	parts := strings.Split(s, ".")
+	if len(parts) == 0 {
+		return v, fmt.Errorf("空版本号")
+	}
+	for i := 0; i < 3; i++ {
+		if i >= len(parts) {
+			break
+		}
+		n, err := strconv.Atoi(strings.TrimSpace(parts[i]))
+		if err != nil {
+			return v, err
+		}
+		v[i] = n
+	}
+	return v, nil
 }
 
 // ---- 节点操作 ----
@@ -510,6 +624,12 @@ func applyHost(n *store.Node, h *system.HostInfo) {
 	n.Arch = h.Arch
 	n.CPUCores = h.CPUCores
 	n.MemTotal = h.MemTotal
+	n.AgentVersion = h.AgentVersion
+	if len(h.Storage) > 0 {
+		if b, err := json.Marshal(h.Storage); err == nil {
+			n.StorageJSON = string(b)
+		}
+	}
 	n.LastSeen = time.Now().Unix()
 }
 

@@ -113,6 +113,8 @@ func (a *API) Handler() http.Handler {
 	// ---- Agent 注册/心跳（Token 自身鉴权，无会话） ----
 	mux.HandleFunc("POST /api/agent/register", a.agentRegister)
 	mux.HandleFunc("POST /api/agent/heartbeat", a.agentHeartbeat)
+	// Agent 自升级下载面板自身二进制（节点长期 Token 查询参数鉴权，无会话）
+	mux.HandleFunc("GET /api/agent-binary", a.agentBinary)
 
 	// ---- 一键安装（公开） ----
 	mux.HandleFunc("GET /install.sh", a.installScript)
@@ -139,6 +141,8 @@ func (a *API) Handler() http.Handler {
 		auth.RequirePermission(store.PermNodeWrite, http.HandlerFunc(a.batchNodes))))
 	mux.Handle("POST /api/nodes/{id}/rotate-token", a.mw.RequireAuth(
 		auth.RequirePermission(store.PermNodeWrite, http.HandlerFunc(a.rotateNodeToken))))
+	mux.Handle("POST /api/nodes/{id}/upgrade", a.mw.RequireAuth(
+		auth.RequirePermission(store.PermNodeWrite, http.HandlerFunc(a.upgradeNode))))
 	mux.Handle("GET /api/nodes/{id}/info", a.mw.RequireAuth(
 		auth.RequirePermission(store.PermNodeRead, http.HandlerFunc(a.nodeLiveInfo))))
 	mux.Handle("GET /api/nodes/{id}/docker/status", a.mw.RequireAuth(

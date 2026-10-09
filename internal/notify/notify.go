@@ -46,6 +46,7 @@ var Types = map[string]string{
 	"wecom":      "企业微信机器人",
 	"dingtalk":   "钉钉机器人",
 	"webhook":    "通用 Webhook",
+	"plusplus":   "PushPlus 推送加",
 	"sms":        "短信",
 }
 
@@ -54,6 +55,7 @@ var SecretKeys = map[string][]string{
 	"wxpusher":   {"app_token"},
 	"serverchan": {"sendkey"},
 	"dingtalk":   {"secret"},
+	"plusplus":   {"token"},
 	"sms":        {"access_key_secret", "secret_key"},
 }
 
@@ -108,6 +110,12 @@ func Build(typ string, cfg map[string]string) (Sender, error) {
 			return nil, errors.New("url 必填")
 		}
 		return &genericWebhook{url: u}, nil
+	case "plusplus":
+		tok := strings.TrimSpace(cfg["token"])
+		if tok == "" {
+			return nil, errors.New("token 必填")
+		}
+		return &plusplus{token: tok}, nil
 	case "sms":
 		return buildSMS(cfg)
 	default:
@@ -287,6 +295,35 @@ func (w *genericWebhook) Send(msg Message) error {
 	_, err := postJSON(w.url, payload)
 	if err != nil {
 		return fmt.Errorf("webhook: %w", err)
+	}
+	return nil
+}
+
+// ---- PushPlus 推送加 ----
+
+type plusplus struct {
+	token string
+}
+
+// Send 调用 PushPlus 发送接口（https://www.pushplus.plus/send）。
+// 成功响应 code == 200。
+func (p *plusplus) Send(msg Message) error {
+	payload := map[string]any{
+		"token":    p.token,
+		"title":    msg.Title,
+		"content":  msg.Title + "\n" + msg.Body,
+		"template": "txt",
+	}
+	body, err := postJSON("https://www.pushplus.plus/send", payload)
+	if err != nil {
+		return fmt.Errorf("pushplus: %w", err)
+	}
+	var r struct {
+		Code int    `json:"code"`
+		Msg  string `json:"msg"`
+	}
+	if err := json.Unmarshal(body, &r); err == nil && r.Code != 200 {
+		return fmt.Errorf("pushplus: code=%d msg=%s", r.Code, r.Msg)
 	}
 	return nil
 }

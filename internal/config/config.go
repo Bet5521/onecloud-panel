@@ -30,6 +30,7 @@ type Agent struct {
 	Token         string // 已注册节点的长期 Token（非注册模式使用）
 	InsecureTLS   bool   // 面板为自签 HTTPS 时跳过证书校验
 	TLSPin        string // 固定面板证书 SHA256 指纹，提供后跳过系统 CA 校验并校验指纹
+	Unit          string // systemd 单元名（自升级重启用），默认 onecloud-panel-agent
 }
 
 func registerCommon(fs *flag.FlagSet, defListen string) *Common {
@@ -74,6 +75,8 @@ func ParseAgent(args []string) (*Agent, error) {
 		"跳过面板 HTTPS 证书校验（自签证书场景）(env: OCP_INSECURE_TLS)")
 	fs.StringVar(&a.TLSPin, "tls-pin", os.Getenv("OCP_TLS_PIN"),
 		"固定面板证书 SHA256 指纹（sha256:xxxx）；提供后跳过系统 CA 校验并校验指纹，优先于 --insecure (env: OCP_TLS_PIN)")
+	fs.StringVar(&a.Unit, "unit", envOr("OCP_AGENT_UNIT", "onecloud-panel-agent"),
+		"systemd 单元名（自升级重启用）(env: OCP_AGENT_UNIT)")
 	if err := fs.Parse(args); err != nil {
 		return nil, err
 	}

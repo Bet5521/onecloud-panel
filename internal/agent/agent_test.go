@@ -65,7 +65,7 @@ func TestRegisterAndHeartbeat(t *testing.T) {
 func startAgentServer() (*tokenHolder, http.Handler) {
 	h := &tokenHolder{}
 	h.set("good-token")
-	return h, newServer(h).mux()
+	return h, newServer(h, "", "").mux()
 }
 
 func agentDo(h http.Handler, method, path string, body any, token string) *httptest.ResponseRecorder {

@@ -61,19 +61,19 @@ jobs:
       version: ${{ steps.ver.outputs.version }}
     steps:
       - name: 检出代码
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           # 需要完整历史与 tag，才能读取/自增版本号。
           fetch-depth: 0
 
       - name: 安装 Go（读取 go.mod 版本）
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
           cache: true
 
       - name: 安装 Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: "22"
           cache: npm
@@ -89,7 +89,23 @@ jobs:
         run: go vet ./...
 
       - name: 单元测试
-        run: go test ./... -p 1 -count=1 -timeout 300s
+        shell: bash
+        run: |
+          set +e
+          OUT="$(go test ./... -p 1 -count=1 -timeout 300s 2>&1)"
+          RC=$?
+          printf '%s\n' "$OUT"
+          if [ "$RC" -ne 0 ]; then
+            # 失败时把关键行输出为「注解」（公开可读、便于定位），并附到任务摘要
+            KEY="$(printf '%s\n' "$OUT" \
+              | grep -E '^(FAIL|--- FAIL|panic:|# )|_test\.go:[0-9]+:' \
+              | head -60 \
+              | sed 's/%/%25/g; s/\r//g')"
+            printf '```\n%s\n```\n' "$KEY" >> "$GITHUB_STEP_SUMMARY"
+            ANNO="$(printf '%s\n' "$KEY" | awk 'BEGIN{ORS=""} {print $0 "%0A"}')"
+            echo "::error title=单元测试失败::${ANNO}"
+            exit 1
+          fi
 
       - name: 计算版本号
         id: ver
@@ -165,7 +181,7 @@ jobs:
           ( cd dist && sha256sum onecloud-panel-* > checksums.txt && cat checksums.txt )
 
       - name: 上传产物
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: onecloud-panel-dist
           path: |
@@ -200,7 +216,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: 下载编译产物
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: onecloud-panel-dist
           path: dist
@@ -215,7 +231,7 @@ jobs:
           ( cd dist && sha256sum -c checksums.txt )
 
       - name: 创建 / 更新 Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ needs.build.outputs.tag }}
           name: ${{ needs.build.outputs.tag }}

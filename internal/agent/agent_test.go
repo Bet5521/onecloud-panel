@@ -271,7 +271,7 @@ func TestHeartbeatParsesNodeID(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	resp, err := Heartbeat(ctx, srv.URL, "tok", nil, false)
+	resp, err := Heartbeat(ctx, srv.URL, "tok", nil, false, "")
 	if err != nil {
 		t.Fatalf("heartbeat: %v", err)
 	}

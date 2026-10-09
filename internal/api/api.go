@@ -205,8 +205,6 @@ func (a *API) Handler() http.Handler {
 		auth.RequirePermission(store.PermSettingsRead, http.HandlerFunc(a.updateCheck))))
 	mux.Handle("POST /api/update/apply", a.mw.RequireAuth(
 		auth.RequirePermission(store.PermSettingsWrite, http.HandlerFunc(a.updateApply))))
-	mux.Handle("GET /api/panel/backup", a.mw.RequireAuth(
-		auth.RequirePermission(store.PermSettingsRead, http.HandlerFunc(a.panelBackup))))
 	mux.Handle("POST /api/panel/restore", a.mw.RequireAuth(
 		auth.RequirePermission(store.PermSettingsWrite, http.HandlerFunc(a.panelRestore))))
 	mux.Handle("GET /api/settings", a.mw.RequireAuth(

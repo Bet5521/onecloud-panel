@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"time"
 
 	"onecloud-panel/internal/audit"
 	"onecloud-panel/internal/auth"
@@ -90,30 +89,6 @@ func (a *API) panelRestart(w http.ResponseWriter, r *http.Request) {
 	a.audit.Record(r, "settings", "restart", "user", username, audit.ResultSuccess,
 		audit.DetailJSON(map[string]any{"task_id": taskID}))
 	writeJSON(w, map[string]int64{"task_id": taskID})
-}
-
-// GET /api/panel/backup — 在线备份数据库为可下载文件。
-func (a *API) panelBackup(w http.ResponseWriter, r *http.Request) {
-	if a.dataDir == "" {
-		writeError(w, http.StatusInternalServerError, "数据目录未配置")
-		return
-	}
-	tmp, err := os.CreateTemp("", "ocp-backup-*.db")
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "创建临时备份失败")
-		return
-	}
-	tmpName := tmp.Name()
-	_ = tmp.Close()
-	defer os.Remove(tmpName)
-	if err := a.store.Backup(tmpName); err != nil {
-		writeError(w, http.StatusInternalServerError, "备份失败: "+err.Error())
-		return
-	}
-	w.Header().Set("Content-Type", "application/octet-stream")
-	w.Header().Set("Content-Disposition",
-		`attachment; filename="panel-`+time.Now().Format("20060102-150405")+`.db"`)
-	http.ServeFile(w, r, tmpName)
 }
 
 // POST /api/panel/restore — 上传备份文件恢复数据库，随后异步重启面板以加载新库。

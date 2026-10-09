@@ -136,21 +136,6 @@
           </div>
         </el-card>
 
-        <!-- ============ 数据备份 ============ -->
-        <el-card shadow="never" class="section-gap">
-          <template #header><span>数据备份</span></template>
-          <div class="backup-desc">
-            导出面板数据（SQLite 一致快照 + 恢复说明）。恢复：停止面板 → 解包覆盖数据目录中的
-            <span class="path">panel.db</span>（含 secret.key 时一并覆盖）→ 启动面板。
-          </div>
-          <el-checkbox v-model="backupWithSecret">
-            一并打包 secret.key（完整可恢复备份必需；泄露后持有者可解密节点 Token 与 SSH 凭据）
-          </el-checkbox>
-          <div class="backup-actions">
-            <el-button type="primary" :icon="Download" @click="downloadBackup">下载备份</el-button>
-          </div>
-        </el-card>
-
         <!-- ============ 邮件服务 SMTP ============ -->
         <el-card shadow="never" class="section-gap">
           <template #header>
@@ -199,12 +184,18 @@
           <template #header><span>数据备份与恢复</span></template>
           <el-alert type="warning" :closable="false" show-icon style="margin-bottom: 12px"
             title="恢复会用上传的备份覆盖当前数据库并重启面板，请谨慎操作" />
-          <el-space wrap>
-            <el-button type="primary" @click="downloadBackup">下载备份</el-button>
+          <div class="backup-desc">
+            导出面板数据（panel.db 一致性快照 + manifest.json）。恢复：停止面板 → 解包覆盖数据目录中的
+            <span class="path">panel.db</span>（含 secret.key 时一并覆盖）→ 启动面板。
+          </div>
+          <el-checkbox v-model="backupWithSecret">
+            一并打包 secret.key（完整可恢复备份必需；泄露后持有者可解密节点 Token 与 SSH 凭据）
+          </el-checkbox>
+          <el-space wrap style="margin-top: 8px">
+            <el-button type="primary" :icon="Download" @click="downloadBackup">下载备份</el-button>
             <el-button @click="pickRestore">选择备份文件恢复</el-button>
             <input ref="restoreInput" type="file" accept=".db" style="display: none" @change="onRestoreFile" />
           </el-space>
-          <p class="hint">备份为 panel.db 的一致性快照（VACUUM INTO），可离线留存；恢复后请在面板重启完成后重新登录。</p>
         </el-card>
 
         <!-- ============ Docker 镜像加速与仓库 ============ -->
@@ -316,19 +307,6 @@ async function applyUpdate() {
     showErr(e, '在线更新失败')
   } finally {
     updating.value = false
-  }
-}
-
-// downloadBackup 导出面板数据备份（鉴权走会话 Cookie，直接触发浏览器下载）。
-function downloadBackup() {
-  const a = document.createElement('a')
-  a.href = backupWithSecret.value ? '/api/panel/backup?include_secrets=1' : '/api/panel/backup'
-  a.rel = 'noopener'
-  document.body.appendChild(a)
-  a.click()
-  document.body.removeChild(a)
-  if (backupWithSecret.value) {
-    ElMessage.warning('备份中包含 secret.key，请妥善保管，勿分享给他人')
   }
 }
 
@@ -491,7 +469,12 @@ onMounted(load)
 // ---- 数据备份与恢复 ----
 const restoreInput = ref(null)
 function downloadBackup() {
-  window.location.href = '/api/panel/backup'
+  // 后端 downloadBackup 直接回 tar.gz（panel.db + manifest.json；include_secrets=1 时含 secret.key）。
+  const url = backupWithSecret.value ? '/api/panel/backup?include_secrets=1' : '/api/panel/backup'
+  window.location.href = url
+  if (backupWithSecret.value) {
+    ElMessage.warning('备份中包含 secret.key，请妥善保管，勿分享给他人')
+  }
 }
 function pickRestore() {
   if (restoreInput.value) restoreInput.value.click()

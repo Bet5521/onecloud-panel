@@ -1,6 +1,7 @@
 package recipes
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -103,5 +104,94 @@ func TestKeyAppsNativeFirst(t *testing.T) {
 		if !idx[id] {
 			t.Fatalf("应用 %s 未出现在 List() 结果中", id)
 		}
+	}
+}
+
+// defaultVars 取配方的默认变量值（空默认值用占位串填充，便于模板渲染）。
+func defaultVars(r *Recipe) map[string]string {
+	vars := map[string]string{}
+	for _, v := range r.Variables {
+		val := v.Default
+		if val == "" {
+			val = "test-value"
+		}
+		vars[v.Key] = val
+	}
+	return vars
+}
+
+// mi-gpt 必须改为从 Bet5521/MI-GPT-NEW 源码构建镜像，而不再拉取上游 idootop/mi-gpt 镜像。
+func TestMIGPTBuildsFromSource(t *testing.T) {
+	reg, err := LoadBuiltin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, ok := reg.Get("migpt")
+	if !ok {
+		t.Fatal("migpt 未进入内置清单")
+	}
+	if r.Docker == nil || r.Docker.Build == nil {
+		t.Fatal("migpt 应声明 docker.build（从源码构建镜像）")
+	}
+	b := r.Docker.Build
+	if b.Source != "https://github.com/Bet5521/MI-GPT-NEW" {
+		t.Fatalf("docker.build.source = %q", b.Source)
+	}
+	if b.Type != "git" {
+		t.Fatalf("docker.build.type = %q，期望 git", b.Type)
+	}
+	if strings.Contains(r.Docker.Image, "idootop") || strings.Contains(b.Source, "idootop") {
+		t.Fatalf("仍引用上游 idootop 镜像/仓库：image=%q source=%q", r.Docker.Image, b.Source)
+	}
+	// armv7l（玩客云）走仓库自带的 Dockerfile.arm，其余架构走多阶段 Dockerfile。
+	for arch, want := range map[string]string{
+		"armv7l": "Dockerfile.arm", "aarch64": "Dockerfile", "x86_64": "Dockerfile",
+	} {
+		rendered, err := r.Render(RenderData{Vars: defaultVars(r), Node: NodeFactsForArch(arch, "n1")})
+		if err != nil {
+			t.Fatalf("%s 渲染失败: %v", arch, err)
+		}
+		rb := rendered.Recipe.Docker.Build
+		if rb.Dockerfile != want {
+			t.Fatalf("%s dockerfile = %q，期望 %q", arch, rb.Dockerfile, want)
+		}
+		if rb.Ref == "" || strings.Contains(rb.Source, "{{") {
+			t.Fatalf("%s 渲染后 build 字段未展开: ref=%q source=%q", arch, rb.Ref, rb.Source)
+		}
+	}
+}
+
+// Gitea 1.2x 起以 root 运行会 log.Fatal 直接退出，且启动强制依赖 git 可执行文件。
+// 配方必须：以非 root 账号运行 + 安装 git。
+func TestGiteaNonRootAndGitDependency(t *testing.T) {
+	reg, err := LoadBuiltin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, ok := reg.Get("gitea")
+	if !ok {
+		t.Fatal("gitea 未进入内置清单")
+	}
+	if r.Native == nil {
+		t.Fatal("gitea 应有 native 规格")
+	}
+	rendered, err := r.Render(RenderData{Vars: defaultVars(r), Node: NodeFactsForArch("x86_64", "n1")})
+	if err != nil {
+		t.Fatalf("渲染失败: %v", err)
+	}
+	unit := rendered.Recipe.Native.UnitTemplate
+	if !strings.Contains(unit, "User=git") {
+		t.Fatalf("systemd 单元未以非 root 账号运行（Gitea 会拒绝启动）:\n%s", unit)
+	}
+	hasGit := false
+	for _, s := range r.Native.InstallSteps {
+		for _, p := range s.Apt {
+			if p == "git" {
+				hasGit = true
+			}
+		}
+	}
+	if !hasGit {
+		t.Fatal("gitea install_steps 未声明 git 依赖（缺少 git 时启动即退出）")
 	}
 }

@@ -177,6 +177,46 @@ docker:
 - 面向玩客云必须支持 `armv7l` 并提供对应镜像/二进制，否则在本机节点无法安装；
 - 修改配方后跑 `go test ./internal/recipes/... ./internal/apps/...` 校验。
 
+### 从源码构建镜像（docker.build）
+
+上游没有适配本机架构的镜像（如玩客云 armv7l），或必须固定用自有 fork 的源码构建时，
+在 `docker` 段加 `build`：安装时会在节点上获取源码并执行 `docker build`，产物打上
+`image` 指定的**本地 tag**，随后按普通容器流程创建运行（**不再拉取远端镜像**）。
+
+```yaml
+docker:
+  arches: [armv7l, aarch64, x86_64]
+  image: myapp-local:latest      # 本地构建产物 tag
+  ports: ["6060:6060"]
+  build:
+    type: git                    # git（默认）| archive
+    source: https://github.com/<owner>/<repo>
+    ref: "{{.Vars.app_ref}}"     # 分支/标签/提交；改它就等于换构建版本
+    dockerfile: '{{if eq .Node.Arch "armv7l"}}Dockerfile.arm{{else}}Dockerfile{{end}}'
+    context: .                   # 构建上下文相对路径（默认 .）
+    target: ""                   # 多阶段构建的 --target（可选）
+    args: {HTTP_PROXY: ""}       # --build-arg（可选）
+    env: {DOCKER_BUILDKIT: "1"}  # 构建命令环境变量（默认 DOCKER_BUILDKIT=1）
+    workdir: /var/tmp/ocp-build-myapp   # 节点上的源码目录（默认 /var/tmp/ocp-build-<id>）
+```
+
+要点：
+
+- **每次安装都会重建**：同一提交的源码内容一致，Docker 层缓存会让重复构建很快；
+  源码有更新时才会真正重跑编译，避免「静默沿用旧镜像」。
+- 节点需具备 `docker` CLI（构建走 CLI，运行仍由 Engine API 管理）；`type: git` 还需 `git`。
+- `type: archive` 时 `source` 直接给源码归档 URL（如 GitHub codeload 的 `tar.gz`），
+  走面板的 GitHub 加速代理下载后 `tar --strip-components=1` 解包。
+- 绑定挂载的目标文件（如 `/app/.env`）必须先用 `install_steps` 的 `write` 建好，
+  否则 Docker 会把它当作目录创建。
+
+### Gitea 直装的运行账号约定（踩坑记录）
+
+Gitea 1.2x 起，`modules/setting` 的 `mustNotRunAsRoot` 会在**以 root 运行**时直接
+`log.Fatal("Gitea is not supposed to be run as root...")` 退出；此外启动路径的
+`mustInit(git.InitFull)` 要求系统存在 `git`。因此 `gitea.yaml` 必须以专用非 root
+账号（默认 `git`）运行，并在 `install_steps` 里装 `git`——两者缺一，服务都会「装完就秒退」。
+
 ## 九、CI/CD 与发布
 
 推送到 `main` 后由 GitHub Actions **自动编译并发布 Release**（版本号自增、tag 与 Release

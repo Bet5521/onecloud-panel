@@ -3,15 +3,88 @@ id: migpt
 name: MiGPT
 category: 网络
 icon: message-circle
-description: 小爱音箱接入大模型，支持 AI 问答、角色扮演与自定义 TTS；无头服务，经配置文件与环境变量运行。
-homepage: https://github.com/idootop/mi-gpt
+description: 小爱音箱接入大模型（AI 问答 / 角色扮演 / 自定义 TTS），带 Web 控制台（默认 6060）。镜像在节点上由 https://github.com/Bet5521/MI-GPT-NEW 源码直接构建（armv7l 走 Dockerfile.arm），不再拉取上游 idootop/mi-gpt 镜像。
+homepage: https://github.com/Bet5521/MI-GPT-NEW
 methods: [docker]
-config_files:
-  - {path: /var/lib/migpt/.migpt.js, description: MiGPT 配置（容器挂载自宿主机）}
+ports:
+  - {port: 6060, proto: tcp, description: Web 控制台}
+variables:
+  - key: migpt_ref
+    name: 源码分支/标签
+    type: string
+    default: main
+    description: MI-GPT-NEW 的分支、标签或提交号（改版本即重新构建镜像）
+  - key: tz
+    name: 时区
+    type: string
+    default: Asia/Shanghai
+  - key: autostart
+    name: 容器启动后自动拉起 MiGPT
+    type: bool
+    default: "true"
+  - key: web_auth_user
+    name: 控制台账号（可选）
+    type: string
+    default: ""
+    description: 留空则不启用控制台访问口令
+  - key: web_auth_pass
+    name: 控制台密码（可选）
+    type: string
+    default: ""
+healthcheck: {type: http, port: 6060, path: /}
 docker:
-  arches: [aarch64, x86_64]
-  image: idootop/mi-gpt:latest
-  volumes: [/var/lib/migpt/.migpt.js:/app/.migpt.js]
+  arches: [armv7l, aarch64, x86_64]
+  image: migpt-local:latest
+  ports: ["6060:6060"]
+  volumes:
+    - /var/lib/migpt/config:/app/config
+    - /var/lib/migpt/logs:/app/logs
+    - /var/lib/migpt/.env:/app/.env
+    - /var/lib/migpt/.migpt.js:/app/.migpt.js
+  env:
+    - TZ={{.Vars.tz}}
+    - MIGPT_UI_PORT=6060
+    - MIGPT_AUTOSTART={{if eq .Vars.autostart "true"}}1{{else}}0{{end}}
+    - WEB_AUTH_USER={{.Vars.web_auth_user}}
+    - WEB_AUTH_PASS={{.Vars.web_auth_pass}}
+  build:
+    type: git
+    source: https://github.com/Bet5521/MI-GPT-NEW
+    ref: "{{.Vars.migpt_ref}}"
+    # armv7l（玩客云）用仓库自带的 Dockerfile.arm；其余架构用多阶段 Dockerfile。
+    dockerfile: '{{if eq .Node.Arch "armv7l"}}Dockerfile.arm{{else}}Dockerfile{{end}}'
+    env:
+      # 多阶段 Dockerfile 依赖 BuildKit 的 --mount/TARGETARCH；Dockerfile.arm 用经典构建器更稳。
+      DOCKER_BUILDKIT: '{{if eq .Node.Arch "armv7l"}}0{{else}}1{{end}}'
   install_steps:
-    - name: 建配置目录
-      mkdir: [/var/lib/migpt]
+    - name: 准备数据目录
+      mkdir: [/var/lib/migpt/config, /var/lib/migpt/logs]
+    - name: 预置 .env（绑定挂载目标须先存在，否则会被 Docker 建为目录）
+      write:
+        path: /var/lib/migpt/.env
+        mode: 0644
+        content: |
+          # OpenAI（也支持智谱 GLM / 通义千问 / MoonShot / DeepSeek 等兼容 OpenAI 的模型）
+          OPENAI_MODEL=glm-4-flash
+          OPENAI_API_KEY=
+          OPENAI_BASE_URL=https://open.bigmodel.cn/api/paas/v4
+
+          # 第三方 TTS（可选）
+          # TTS_BASE_URL=http://192.168.1.10:4321/xxxx/api
+    - name: 预置 .migpt.js 引导文件
+      write:
+        path: /var/lib/migpt/.migpt.js
+        mode: 0644
+        content: |
+          // managed by migpt-webui
+          import fs from "node:fs";
+          export default JSON.parse(
+            fs.readFileSync(new URL("./config/migpt.json", import.meta.url), "utf8")
+          );
+  uninstall_steps:
+    - name: 清理源码工作目录
+      exec: {command: rm, args: ["-rf", "/var/tmp/ocp-build-migpt"]}
+config_files:
+  - {path: /var/lib/migpt/.env, description: 模型与 API Key（OpenAI 兼容）}
+  - {path: /var/lib/migpt/config/migpt.json, optional: true, description: 结构化配置（bot / master / speaker）}
+  - {path: /var/lib/migpt/.migpt.js, optional: true, description: MiGPT 入口配置（Web 控制台托管）}

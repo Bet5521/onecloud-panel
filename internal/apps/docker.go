@@ -118,9 +118,15 @@ func (m *Manager) DockerInstall(ctx context.Context, w io.Writer,
 		return fmt.Errorf("同名容器 %s 已存在，请先卸载", cname)
 	}
 
-	// 拉取镜像（镜像已存在时 Engine 立即返回）
+	// 镜像来源：DockerSpec.Build 非空时在节点上从源码构建，否则从 registry 拉取。
 	imageRef := strings.TrimSpace(ds.Image)
-	if err := pullImage(ctx, w, eng, imageRef); err != nil {
+	if ds.Build != nil {
+		built, err := m.buildImage(ctx, w, eng, ex, recipeID, ds)
+		if err != nil {
+			return err
+		}
+		imageRef = built
+	} else if err := pullImage(ctx, w, eng, imageRef); err != nil {
 		return err
 	}
 	// 架构不匹配拦截（在建容器之前，避免留下半成品）

@@ -122,6 +122,27 @@ type DockerSpec struct {
 	Privileged     bool     `yaml:"privileged"`
 	NetworkMode    string   `yaml:"network_mode"`
 	RestartPolicy  string   `yaml:"restart_policy"`
-	InstallSteps   []Step   `yaml:"install_steps"` // 容器外的前置准备（目录等）
-	UninstallSteps []Step   `yaml:"uninstall_steps"`
+	// Build 非空时改为「在节点上从源码构建镜像」，不再从 registry 拉取 Image。
+	Build          *DockerBuildSpec `yaml:"build"`
+	InstallSteps   []Step           `yaml:"install_steps"` // 容器外的前置准备（目录等）
+	UninstallSteps []Step           `yaml:"uninstall_steps"`
+}
+
+// DockerBuildSpec 从源码构建镜像。
+//
+// 适用场景：上游未提供本机架构镜像（如玩客云 armv7l），或需固定使用自有 fork
+// 的源码构建，而不是使用 registry 上的现成镜像。安装时会在节点上获取源码
+// （git 克隆或下载源码归档）并执行 `docker build`，产物打上 Image 指定的本地
+// tag，随后按普通容器方式创建运行（与远端镜像流程完全一致）。
+type DockerBuildSpec struct {
+	Type       string            `yaml:"type"`       // git（默认）| archive
+	Source     string            `yaml:"source"`     // git 仓库地址 或 源码归档 URL
+	Ref        string            `yaml:"ref"`        // 分支/标签/提交（git 必填；archive 可选）
+	Dockerfile string            `yaml:"dockerfile"` // 相对构建上下文的 Dockerfile（默认 Dockerfile）
+	Context    string            `yaml:"context"`    // 构建上下文相对路径（默认 .）
+	Image      string            `yaml:"image"`      // 产物镜像 tag（默认为 docker.image）
+	Target     string            `yaml:"target"`     // 多阶段构建的 --target（可选）
+	Args       map[string]string `yaml:"args"`       // --build-arg 键值
+	Env        map[string]string `yaml:"env"`        // 构建命令环境变量（默认 DOCKER_BUILDKIT=1）
+	Workdir    string            `yaml:"workdir"`    // 节点上的源码工作目录（默认 /var/tmp/ocp-build-<id>）
 }

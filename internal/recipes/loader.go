@@ -324,6 +324,11 @@ func validateDocker(r *Recipe) error {
 	if err := ValidateTemplate(r, d.Image, "docker.image"); err != nil {
 		return err
 	}
+	if d.Build != nil {
+		if err := validateDockerBuild(r, d); err != nil {
+			return err
+		}
+	}
 	if err := validateDockerUser(r.ID, d.User); err != nil {
 		return err
 	}
@@ -332,6 +337,57 @@ func validateDocker(r *Recipe) error {
 	}
 	if err := validateSteps(r, "docker.uninstall_steps", d.UninstallSteps); err != nil {
 		return err
+	}
+	return nil
+}
+
+// validateDockerBuild 校验 docker.build 段。
+func validateDockerBuild(r *Recipe, d *DockerSpec) error {
+	b := d.Build
+	switch b.Type {
+	case "", "git", "archive":
+	default:
+		return fmt.Errorf("配方 %s: docker.build.type 非法 %q（应为 git/archive）", r.ID, b.Type)
+	}
+	if strings.TrimSpace(b.Source) == "" {
+		return fmt.Errorf("配方 %s: docker.build.source 不能为空", r.ID)
+	}
+	if b.Type == "git" && strings.TrimSpace(b.Ref) == "" {
+		return fmt.Errorf("配方 %s: docker.build.ref 不能为空（git 方式需指定分支/标签/提交）", r.ID)
+	}
+	for _, f := range []struct{ where, val string }{
+		{"docker.build.source", b.Source},
+		{"docker.build.ref", b.Ref},
+		{"docker.build.dockerfile", b.Dockerfile},
+		{"docker.build.context", b.Context},
+		{"docker.build.image", b.Image},
+		{"docker.build.target", b.Target},
+		{"docker.build.workdir", b.Workdir},
+	} {
+		if err := ValidateTemplate(r, f.val, f.where); err != nil {
+			return err
+		}
+	}
+	for _, m := range []struct {
+		where string
+		kv    map[string]string
+	}{{"docker.build.args", b.Args}, {"docker.build.env", b.Env}} {
+		for k, v := range m.kv {
+			if strings.TrimSpace(k) == "" {
+				return fmt.Errorf("配方 %s: %s 存在空键", r.ID, m.where)
+			}
+			if err := ValidateTemplate(r, v, m.where); err != nil {
+				return err
+			}
+		}
+	}
+	// 构建产物 final image tag：build.image 优先，其次 docker.image。
+	if strings.TrimSpace(b.Image) == "" && strings.TrimSpace(d.Image) == "" {
+		return fmt.Errorf("配方 %s: docker.build 需指定产物镜像名（build.image 或 docker.image）", r.ID)
+	}
+	if b.Workdir != "" && !strings.HasPrefix(strings.TrimSpace(b.Workdir), "/") &&
+		!strings.Contains(b.Workdir, "{{") {
+		return fmt.Errorf("配方 %s: docker.build.workdir 必须为绝对路径", r.ID)
 	}
 	return nil
 }

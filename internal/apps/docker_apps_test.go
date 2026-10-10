@@ -62,6 +62,7 @@ type fakeContainers struct {
 	counter        int
 	pullError      string
 	pullArch       string // 空=arm
+	pullCalls      []string
 }
 
 func newFakeContainers() *fakeContainers {
@@ -92,6 +93,7 @@ func (f *fakeContainers) handle(req *http.Request) (*http.Response, error) {
 		return resp(200, `{"Version":"27.0.0","Arch":"arm"}`), nil
 
 	case path == "/images/create": // 拉取
+		f.pullCalls = append(f.pullCalls, q.Get("fromImage")+":"+q.Get("tag"))
 		if f.pullError != "" {
 			return resp(200, `{"error":"`+f.pullError+`"}`+"\n"), nil
 		}

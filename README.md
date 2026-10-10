@@ -181,7 +181,7 @@ chmod +x /usr/local/bin/onecloud-panel
 | mihomo (Clash Meta) | 网络 | 原生（优先）/ Docker |
 | WireGuard | 网络 | 原生 |
 | Cloudflared | 网络 | 原生（优先）/ Docker |
-| MiGPT | 网络 | Docker |
+| MiGPT | 网络 | Docker（节点上由 [MI-GPT-NEW](https://github.com/Bet5521/MI-GPT-NEW) 源码构建） |
 | Nginx Proxy Manager（NPM） | 网络 | Docker |
 | Nginx | 网络 | Docker |
 | **Lucky** | 网络 | 原生（优先）/ Docker |

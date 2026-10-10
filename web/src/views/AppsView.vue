@@ -162,6 +162,14 @@
       <!-- 容器高级设置：覆盖配方默认的端口/环境变量/数据卷/重启策略 -->
       <template v-if="form.method === 'docker' && recipe?.Docker">
         <el-divider content-position="left">容器高级设置（可选）</el-divider>
+        <el-form-item v-if="recipe.Docker.Build" label="镜像来源">
+          <span class="hint">
+            在节点上从源码构建，不拉取远端镜像：{{ recipe.Docker.Build.Source }}
+            （{{ recipe.Docker.Build.Type === 'archive' ? '源码归档' : 'git' }}<template
+              v-if="recipe.Docker.Build.Ref"> · {{ recipe.Docker.Build.Ref }}</template>）→ 产物镜像
+            {{ recipe.Docker.Build.Image || recipe.Docker.Image }}
+          </span>
+        </el-form-item>
         <el-form-item label="端口映射">
           <el-input v-model="ovForm.ports" type="textarea" :rows="2"
             placeholder="每行或逗号分隔：8080:80/tcp（留空使用配方默认）" />

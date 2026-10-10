@@ -142,6 +142,42 @@ func (r *Recipe) Render(data RenderData) (*RenderedRecipe, error) {
 				return nil, err
 			}
 		}
+		if b := out.Docker.Build; b != nil {
+			if b.Type, err = renderStr(b.Type, "docker.build.type"); err != nil {
+				return nil, err
+			}
+			if b.Source, err = renderStr(b.Source, "docker.build.source"); err != nil {
+				return nil, err
+			}
+			if b.Ref, err = renderStr(b.Ref, "docker.build.ref"); err != nil {
+				return nil, err
+			}
+			if b.Dockerfile, err = renderStr(b.Dockerfile, "docker.build.dockerfile"); err != nil {
+				return nil, err
+			}
+			if b.Context, err = renderStr(b.Context, "docker.build.context"); err != nil {
+				return nil, err
+			}
+			if b.Image, err = renderStr(b.Image, "docker.build.image"); err != nil {
+				return nil, err
+			}
+			if b.Target, err = renderStr(b.Target, "docker.build.target"); err != nil {
+				return nil, err
+			}
+			if b.Workdir, err = renderStr(b.Workdir, "docker.build.workdir"); err != nil {
+				return nil, err
+			}
+			for k, v := range b.Args {
+				if b.Args[k], err = renderStr(v, "docker.build.args"); err != nil {
+					return nil, err
+				}
+			}
+			for k, v := range b.Env {
+				if b.Env[k], err = renderStr(v, "docker.build.env"); err != nil {
+					return nil, err
+				}
+			}
+		}
 		if err := renderSteps(out.Docker.InstallSteps, renderStr); err != nil {
 			return nil, err
 		}

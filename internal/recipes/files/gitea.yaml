@@ -3,17 +3,26 @@ id: gitea
 name: Gitea
 category: 开发
 icon: git
-description: 轻量自托管 Git 服务，内置 SQLite 支持与 Web 安装向导。
+description: 轻量自托管 Git 服务，内置 SQLite 支持与 Web 安装向导。直装以专用系统账号运行（Gitea 禁止以 root 启动），并自动安装 git 依赖。
 homepage: https://github.com/go-gitea/gitea
 methods: [native, docker]
 ports:
   - {port: 3000, proto: tcp, description: Web}
-  - {port: 2222, proto: tcp, description: SSH（可选）}
+  - {port: 2222, proto: tcp, description: SSH（可选，需在安装向导中启用内置 SSH 服务）}
 variables:
   - key: version
     name: 版本
     type: string
     default: "1.27.3"
+  - key: git_user
+    name: 运行账号
+    type: string
+    default: git
+    description: 专用系统账号。Gitea 以 root 运行会直接退出，故默认用非 root 账号。
+  - key: work_dir
+    name: 数据目录
+    type: string
+    default: /var/lib/gitea
 healthcheck: {type: http, port: 3000, path: /}
 native:
   arches: [armv7l, aarch64, x86_64, i386]
@@ -23,22 +32,56 @@ native:
     Description=Gitea
     After=network-online.target
     Wants=network-online.target
+
     [Service]
-    Environment=HOME=/var/lib/gitea GITEA_CUSTOM=/var/lib/gitea/custom
-    ExecStart=/usr/local/bin/gitea web --work-path /var/lib/gitea
+    Type=simple
+    User={{.Vars.git_user}}
+    Group={{.Vars.git_user}}
+    WorkingDirectory={{.Vars.work_dir}}
+    Environment=HOME={{.Vars.work_dir}}
+    Environment=GITEA_WORK_DIR={{.Vars.work_dir}}
+    Environment=GITEA_CUSTOM={{.Vars.work_dir}}/custom
+    ExecStart=/usr/local/bin/gitea web --work-path {{.Vars.work_dir}}
     Restart=on-failure
     RestartSec=5s
+
     [Install]
     WantedBy=multi-user.target
   install_steps:
-    - name: 建目录
-      mkdir: [/var/lib/gitea/custom/conf]
+    # Gitea 启动时 mustInit(git.InitFull) 会调用 `git version`，缺 git 会 log.Fatal 退出。
+    - name: 安装 git 依赖
+      apt: [git, ca-certificates]
+    # 起服务用的是专用账号，同时该账号也是 Web 向导里 SSH 克隆所需的 OS 用户。
+    # 显式建组再建用户：部分发行版 USERGROUPS_ENAB=no 时不会自动创建同名组，
+    # 而 systemd 单元的 Group= 一旦找不到组，服务会直接启动失败。
+    - name: 创建专用系统账号
+      exec:
+        command: sh
+        args:
+          - -c
+          - |
+            U="{{.Vars.git_user}}"
+            getent group "$U" >/dev/null 2>&1 || groupadd --system "$U"
+            id -u "$U" >/dev/null 2>&1 || useradd --system --create-home --home-dir "{{.Vars.work_dir}}" --shell /bin/bash --gid "$U" "$U"
+    - name: 建数据目录
+      mkdir:
+        - "{{.Vars.work_dir}}/custom/conf"
+        - "{{.Vars.work_dir}}/data"
+        - "{{.Vars.work_dir}}/log"
+        - "{{.Vars.work_dir}}/repos"
     - name: 下载二进制
       download:
         # Gitea 官方仅发布 arm-5/arm-6 二进制，arm-6 可在 armv7 CPU 上运行
         url: https://dl.gitea.com/gitea/{{.Vars.version}}/gitea-{{.Vars.version}}-linux-{{if eq .Node.Arch "armv7l"}}arm-6{{else}}{{.Node.ArchGO}}{{end}}
         dest: /usr/local/bin/gitea
         mode: 0755
+    - name: 修正数据目录属主
+      exec:
+        command: sh
+        args:
+          - -c
+          - |
+            chown -R "{{.Vars.git_user}}:{{.Vars.git_user}}" "{{.Vars.work_dir}}"
   uninstall_steps:
     - name: 删除二进制
       exec: {command: rm, args: ["-f", "/usr/local/bin/gitea"]}

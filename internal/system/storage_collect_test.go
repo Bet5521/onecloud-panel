@@ -88,8 +88,8 @@ func TestClassifyMMCDevices(t *testing.T) {
 	if sd.Class != "sd" || sd.ClassLabel != "SD 卡" {
 		t.Errorf("mmcblk0 分类 = %q/%q, 期望 sd/SD 卡", sd.Class, sd.ClassLabel)
 	}
-	if sd.SizeBytes != 31116288*512 {
-		t.Errorf("mmcblk0 容量 = %d, 期望 %d", sd.SizeBytes, 31116288*512)
+	if sd.SizeBytes != int64(31116288)*512 {
+		t.Errorf("mmcblk0 容量 = %d, 期望 %d", sd.SizeBytes, int64(31116288)*512)
 	}
 	if sd.Model != "SD Card" {
 		t.Errorf("mmcblk0 型号 = %q, 期望 SD Card", sd.Model)

@@ -95,6 +95,9 @@ func listDevices(ctx context.Context, ex executor.Executor) ([]Device, error) {
 		return nil, fmt.Errorf("lsblk 失败: %s", strings.TrimSpace(r.Output))
 	}
 	out := filterBlockDevices(parseLsblk(r.Output))
+	// lsblk 的 SIZE 在个别平台上可能拿不到（例如忽略 -b 时给出人类可读写法，
+	// 或极老版本无 -b）：用 sysfs 的扇区数兜底，保证容量显示可信。
+	fillSizesFromSysfs(ctx, ex, out)
 	// 系统盘识别失败时一律标记为不可操作，宁可失败也不误伤。
 	rootDisk, rerr := rootDiskPath(ctx, ex)
 	// sysfs 的 device/type 能精确区分 mmcblk* 是 SD 卡还是板载 eMMC
@@ -292,6 +295,91 @@ func isSystemDevice(device, rootDisk string) bool {
 
 var lsblkKV = regexp.MustCompile(`([A-Z_]+)="([^"]*)"`)
 
+// fillSizesFromSysfs 为 lsblk 未能给出容量的设备补齐大小。
+//
+// /sys/block/<disk>/size 与 /sys/block/<disk>/<part>/size 恒为 512 字节扇区数，
+// 与 lsblk 版本、`-b` 支持情况、平台字长都无关，是权威来源。
+// 仅当存在 Size<=0 的设备时才额外执行一次命令，正常路径不增加开销。
+func fillSizesFromSysfs(ctx context.Context, ex executor.Executor, devs []Device) {
+	idx := make(map[string]int, len(devs))
+	need := false
+	for i := range devs {
+		idx[devs[i].Name] = i
+		if devs[i].Size <= 0 {
+			need = true
+		}
+	}
+	if !need {
+		return
+	}
+	r, err := ex.Exec(ctx, "sh", "-c",
+		`for f in /sys/block/*/size /sys/block/*/*/size; do [ -e "$f" ] || continue; `+
+			`p=${f%/size}; printf '%s %s\n' "${p##*/}" "$(cat "$f" 2>/dev/null)"; done`)
+	if err != nil || r.ExitCode != 0 {
+		return
+	}
+	for _, line := range strings.Split(r.Output, "\n") {
+		f := strings.Fields(strings.TrimSpace(line))
+		if len(f) != 2 {
+			continue
+		}
+		i, ok := idx[f[0]]
+		if !ok || devs[i].Size > 0 {
+			continue
+		}
+		sectors, err := strconv.ParseInt(f[1], 10, 64)
+		if err != nil || sectors <= 0 {
+			continue
+		}
+		devs[i].Size = sectors * 512
+	}
+}
+
+// parseByteSize 把 lsblk 的 SIZE 字段解析为字节数。
+//
+// 注意：**必须用 int64**。面板要跑在 armv7（32 位）等平台上，用 int 会让
+// `fmt.Sscan` 在超过 2^31-1 时因溢出直接失败并**保持 0**——58.2GB 的 mmcblk0
+// 就是这么被显示成 0 B 的。同时兼容个别 lsblk 忽略 `-b` 时输出的人类可读写法。
+func parseByteSize(s string) int64 {
+	s = strings.TrimSpace(s)
+	if s == "" || s == "none" {
+		return 0
+	}
+	if v, err := strconv.ParseInt(s, 10, 64); err == nil {
+		return v
+	}
+	// 回退：解析 "58.2G" / "512M" / "1T" 这类写法。
+	i := 0
+	for i < len(s) && (s[i] >= '0' && s[i] <= '9' || s[i] == '.') {
+		i++
+	}
+	if i == 0 {
+		return 0
+	}
+	num, err := strconv.ParseFloat(s[:i], 64)
+	if err != nil {
+		return 0
+	}
+	var mult float64
+	switch strings.ToUpper(strings.TrimSpace(s[i:])) {
+	case "B":
+		mult = 1
+	case "K", "KB", "KIB":
+		mult = 1 << 10
+	case "M", "MB", "MIB":
+		mult = 1 << 20
+	case "G", "GB", "GIB":
+		mult = 1 << 30
+	case "T", "TB", "TIB":
+		mult = 1 << 40
+	case "P", "PB", "PIB":
+		mult = 1 << 50
+	default:
+		return 0
+	}
+	return int64(num * mult)
+}
+
 func parseLsblk(out string) []Device {
 	var devs []Device
 	for _, line := range strings.Split(out, "\n") {
@@ -303,8 +391,6 @@ func parseLsblk(out string) []Device {
 		for _, m := range lsblkKV.FindAllStringSubmatch(line, -1) {
 			kv[m[1]] = m[2]
 		}
-		size := 0
-		fmt.Sscan(kv["SIZE"], &size)
 		ro := kv["RO"] == "1"
 		label := kv["LABEL"]
 		// lsblk 对空字段可能输出字面量 "none"，归一化为空。
@@ -314,7 +400,7 @@ func parseLsblk(out string) []Device {
 		devs = append(devs, Device{
 			Name:       kv["NAME"],
 			Path:       kv["PATH"],
-			Size:       int64(size),
+			Size:       parseByteSize(kv["SIZE"]),
 			Type:       kv["TYPE"],
 			FSType:     kv["FSTYPE"],
 			MountPoint: kv["MOUNTPOINT"],

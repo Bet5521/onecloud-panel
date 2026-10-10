@@ -315,3 +315,144 @@ func TestValidate(t *testing.T) {
 		}
 	}
 }
+
+// parseByteSize 必须用 int64 承载：面板跑在 armv7（32 位）时，
+// 用 int 会让超过 2^31-1 的容量溢出并回落成 0——这正是 mmcblk0 显示 0 B 的原因。
+// 该断言与平台字长无关，32 位机器上同样会失败（若实现退化为 int）。
+func TestParseByteSizeHandlesOver32Bit(t *testing.T) {
+	gib := float64(1 << 30)
+	// 58.2 GiB ≈ 62537072640 B，远超 int32 上限 2147483647
+	want58G := int64(58.2 * gib)
+	cases := []struct {
+		in   string
+		want int64
+	}{
+		{"62537072640", 62537072640},
+		{"31267481600", 31267481600},
+		{"2147483648", 2147483648}, // 恰好越过 int32 上限
+		{"2147483647", 2147483647}, // int32 上限本身
+		{"58.2G", want58G},
+		{"512M", 512 << 20},
+		{"1T", 1 << 40},
+		{"0", 0},
+		{"", 0},
+		{"none", 0},
+		{"abc", 0},
+		{"12X", 0},
+	}
+	for _, c := range cases {
+		got := parseByteSize(c.in)
+		if got != c.want {
+			t.Fatalf("parseByteSize(%q) = %d, want %d", c.in, got, c.want)
+		}
+	}
+	if v := parseByteSize("62537072640"); v <= 2147483647 {
+		t.Fatalf("大容量必须保留完整 int64 值，实际 %d", v)
+	}
+}
+
+// 回归：58.2GB 的 mmcblk0 必须解析出真实容量（此前在 32 位面板上为 0）。
+func TestParseLsblkLargeDeviceSize(t *testing.T) {
+	out := `NAME="mmcblk0" PATH="/dev/mmcblk0" SIZE="62537072640" TYPE="disk" FSTYPE="" MOUNTPOINT="" RO="0" RM="0" HOTPLUG="0" MODEL="eMMC" LABEL="" TRAN="mmc" PKNAME=""`
+	devs := parseLsblk(out)
+	if len(devs) != 1 {
+		t.Fatalf("设备数 = %d, want 1", len(devs))
+	}
+	if devs[0].Size != 62537072640 {
+		t.Fatalf("容量 = %d, want 62537072640（0 表示仍存在 32 位溢出）", devs[0].Size)
+	}
+}
+
+// lsblk 未给出 SIZE 时，应回退到 sysfs 的扇区数（512 字节/扇区）。
+func TestFillSizesFromSysfsFallback(t *testing.T) {
+	calls := 0
+	ex := &fakeExec{fn: func(name string, args []string) executor.Result {
+		calls++
+		if name == "sh" {
+			return executor.Result{ExitCode: 0, Output: strings.Join([]string{
+				"mmcblk0 122144282",  // 122144282 * 512 = 62537872384
+				"mmcblk0p1 122136576",
+				"sda1 31250000",
+				"garbage",
+				"mmcblk2 notanumber",
+			}, "\n")}
+		}
+		return executor.Result{ExitCode: 0}
+	}}
+
+	devs := []Device{
+		{Name: "mmcblk0", Size: 0},
+		{Name: "mmcblk0p1", Size: 0},
+		{Name: "sda1", Size: 0},
+		{Name: "mmcblk2", Size: 0},   // 扇区数非法 → 保持 0
+		{Name: "unknown", Size: 0},   // sysfs 里没有 → 保持 0
+		{Name: "mmcblk1", Size: 100}, // 已有大小 → 不被覆盖
+	}
+	fillSizesFromSysfs(context.Background(), ex, devs)
+
+	if devs[0].Size != 122144282*512 {
+		t.Fatalf("mmcblk0 = %d, want %d", devs[0].Size, int64(122144282*512))
+	}
+	if devs[1].Size != 122136576*512 {
+		t.Fatalf("mmcblk0p1 = %d", devs[1].Size)
+	}
+	if devs[2].Size != 31250000*512 {
+		t.Fatalf("sda1 = %d", devs[2].Size)
+	}
+	if devs[3].Size != 0 || devs[4].Size != 0 {
+		t.Fatalf("非法/缺失数据不应写入: %+v", devs)
+	}
+	if devs[5].Size != 100 {
+		t.Fatalf("已有大小不应被覆盖: %d", devs[5].Size)
+	}
+	if calls != 1 {
+		t.Fatalf("应只额外执行一次命令，实际 %d", calls)
+	}
+}
+
+// 全部设备都已有大小时，不应产生额外的 sysfs 查询开销。
+func TestFillSizesFromSysfsSkippedWhenSizesPresent(t *testing.T) {
+	calls := 0
+	ex := &fakeExec{fn: func(string, []string) executor.Result {
+		calls++
+		return executor.Result{ExitCode: 0}
+	}}
+	devs := []Device{{Name: "mmcblk0", Size: 62537072640}, {Name: "sda", Size: 16000000000}}
+	fillSizesFromSysfs(context.Background(), ex, devs)
+	if calls != 0 {
+		t.Fatalf("无需兜底时不应执行命令，实际 %d 次", calls)
+	}
+}
+
+// 端到端：lsblk 返回空 SIZE 时，listDevices 仍应给出正确容量。
+func TestListDevicesSizeFallbackEndToEnd(t *testing.T) {
+	lsblkOut := strings.Join([]string{
+		`NAME="mmcblk0" PATH="/dev/mmcblk0" SIZE="" TYPE="disk" FSTYPE="" MOUNTPOINT="" RO="0" RM="1" HOTPLUG="1" MODEL="SD128" LABEL="" TRAN="mmc" PKNAME=""`,
+	}, "\n")
+	ex := &fakeExec{fn: func(name string, args []string) executor.Result {
+		switch {
+		case name == "findmnt":
+			return executor.Result{ExitCode: 0, Output: "/dev/mmcblk0p1\n"}
+		case name == "lsblk" && len(args) > 0 && args[0] == "-no":
+			return executor.Result{ExitCode: 0, Output: "mmcblk0\n"}
+		case name == "lsblk":
+			return executor.Result{ExitCode: 0, Output: lsblkOut}
+		case name == "sh" && len(args) >= 2 && strings.Contains(args[1], "/size"):
+			return executor.Result{ExitCode: 0, Output: "mmcblk0 122144282\n"}
+		case name == "sh":
+			return executor.Result{ExitCode: 0, Output: "mmcblk0 SD\n"}
+		}
+		return executor.Result{ExitCode: 0}
+	}}
+
+	devs, err := listDevices(context.Background(), ex)
+	if err != nil {
+		t.Fatalf("listDevices: %v", err)
+	}
+	if len(devs) != 1 {
+		t.Fatalf("设备数 = %d, want 1", len(devs))
+	}
+	if devs[0].Size != 122144282*512 {
+		t.Fatalf("容量应来自 sysfs 兜底，实际 %d", devs[0].Size)
+	}
+}

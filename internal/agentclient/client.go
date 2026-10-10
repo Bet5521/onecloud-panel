@@ -310,17 +310,42 @@ func (c *Client) RotateToken(ctx context.Context, newToken string) error {
 
 // UpgradeAgent 向 Agent 下发自升级指令；url 为相对面板地址的下载路径
 // （如 /api/agent-binary?t=...），由 Agent 解析为完整地址并下载替换自身。
-func (c *Client) UpgradeAgent(ctx context.Context, url string) error {
-	resp, err := c.req(ctx, http.MethodPost, "/v1/agent-upgrade", map[string]string{"url": url})
+// targetVersion 为面板期望的目标版本，Agent 随心跳回传以便核对是否真正生效。
+//
+// 该调用是**同步**的：Agent 侧会先把升级包下载、校验、试运行并原子替换完成，
+// 再把真实失败原因作为响应体返回。因此这里用长超时客户端（execHTTP），
+// 不能用控制面的 30s 客户端——跨架构时面板还要先向在线 Release 拉产物。
+//
+// 返回的 proto 为 Agent 自升级协议版本：>= agent.UpgradeProto 表示它具备
+// 「同步替换 + 如实回报」的能力；旧版 Agent 会返回 0（应答里没有该字段），
+// 其升级实现必然失败，调用方需改走面板驱动的冷替换。
+func (c *Client) UpgradeAgent(ctx context.Context, url, targetVersion string) (int, error) {
+	resp, err := c.do(c.execHTTP, ctx, http.MethodPost, "/v1/agent-upgrade",
+		agent.UpgradeReq{URL: url, Version: targetVersion})
 	if err != nil {
-		return err
+		return 0, err
 	}
 	defer resp.Body.Close()
+	b, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 	if resp.StatusCode != http.StatusOK {
-		b, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-		return fmt.Errorf("agent 升级返回 %d: %s", resp.StatusCode, strings.TrimSpace(string(b)))
+		msg := strings.TrimSpace(string(b))
+		// Agent 用 {"error": "..."} 返回真实原因，优先透出它而不是状态码。
+		var e struct {
+			Error string `json:"error"`
+		}
+		if json.Unmarshal(b, &e) == nil && e.Error != "" {
+			msg = e.Error
+		}
+		if msg == "" {
+			msg = http.StatusText(resp.StatusCode)
+		}
+		return 0, fmt.Errorf("节点 Agent 拒绝升级（HTTP %d）：%s", resp.StatusCode, msg)
 	}
-	return nil
+	var ok struct {
+		Proto int `json:"proto"`
+	}
+	_ = json.Unmarshal(b, &ok)
+	return ok.Proto, nil
 }
 
 // Tunnel 透传 Docker Engine API 请求到远程节点（无整体超时，由 ctx 控制）。

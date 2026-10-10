@@ -363,6 +363,12 @@
             <el-descriptions-item label="Agent 版本">{{ cur.agent_version || '未知' }}</el-descriptions-item>
             <el-descriptions-item label="面板版本">{{ panelVersion || '未知' }}</el-descriptions-item>
           </el-descriptions>
+          <!-- 最近一次升级结果：失败原因 / 已替换但未生效 都在这里说清楚，
+               避免出现「点了升级，节点没升级，也没有报错」的无反馈状态 -->
+          <el-alert v-if="upgradeNotice" :type="upgradeNotice.type" :closable="false" show-icon
+            style="margin: 10px 0" :title="upgradeNotice.title">
+            <div class="upgrade-detail">{{ upgradeNotice.detail }}</div>
+          </el-alert>
           <el-alert v-if="isBehind(cur.agent_version)" type="warning" :closable="false" show-icon
             style="margin: 10px 0" title="该节点 Agent 版本落后，可手动升级或开启自动升级" />
           <el-space wrap style="margin-top: 8px">
@@ -1484,11 +1490,42 @@ async function toggleAutoUpgrade(val) {
   }
 }
 
+// 最近一次升级结果的展示文案。三种状态要能区分清楚：
+// 成功 / 已替换但未生效（服务没重启成功）/ 明确失败（带原因）。
+const upgradeNotice = computed(() => {
+  const u = cur.value && cur.value.upgrade
+  if (!u) return null
+  const when = u.at ? new Date(u.at * 1000).toLocaleString() : '未知时间'
+  const target = u.target_version || '未知'
+  const applied = u.applied_version || '未知'
+  const eff = !u.ok ? false : (!u.target_version || sameVer(applied, u.target_version))
+  if (eff) {
+    return { type: 'success', title: `最近一次升级成功（${target}）`, detail: `完成时间：${when}` }
+  }
+  if (u.ok) {
+    return {
+      type: 'warning',
+      title: '升级包已就位，但尚未生效',
+      detail: `目标版本 ${target}，当前运行 ${applied}。${u.error || 'Agent 服务可能未重启，重启后新版本生效。'}\n时间：${when}`,
+    }
+  }
+  return {
+    type: 'error',
+    title: `最近一次升级失败（目标 ${target}）`,
+    detail: `${u.error || '原因未知'}\n时间：${when}`,
+  }
+})
+
+function sameVer(a, b) {
+  const norm = (s) => String(s || '').replace(/^v/i, '').split(/[-+]/)[0]
+  return norm(a) === norm(b) && norm(a) !== ''
+}
+
 async function upgradeAgent(row) {
   if (!row) return
   try {
     await ElMessageBox.confirm(
-      '将把面板当前二进制推送到该节点，Agent 替换自身后重启服务，期间节点会短暂离线。确定继续？',
+      '将把匹配该节点架构的面板二进制推送到节点，Agent 校验替换后重启服务，期间节点会短暂离线。确定继续？',
       '升级 Agent',
       { type: 'warning', confirmButtonText: '确定升级', cancelButtonText: '取消' }
     )
@@ -1497,14 +1534,61 @@ async function upgradeAgent(row) {
   }
   upgrading.value = true
   try {
-    await post('/api/nodes/' + row.id + '/upgrade', {})
-    ElMessage.success('升级指令已下发，Agent 重启后将自动重连')
-    setTimeout(() => { load(); if (cur.value) loadLive() }, 8000)
+    const d = await post('/api/nodes/' + row.id + '/upgrade', {})
+    const target = (d && d.target_version) || panelVersion.value || ''
+    ElMessage.success('升级包已就位，Agent 正在重启；稍后页面会显示升级结果')
+    // 版本号可用时连续核对几次，没变就明确告知用户，而不是一直显示「已下发」；
+    // 开发构建（dev）没有可比的版本号，跳过核对只给出提示。
+    if (target && target !== 'dev') {
+      verifyUpgradeLanded(row.id, target)
+    } else {
+      setTimeout(() => { load(); refreshDetail(); loadLive() }, 10000)
+    }
   } catch (e) {
-    ElMessage.error(e.message || '升级失败')
+    // 失败原因是节点返回的真实信息（例如「升级包与本机架构不匹配」），
+    // 用可关闭的提示避免被截断。
+    ElMessage.error({ message: e.message || '升级失败', duration: 10000, showClose: true })
+    load(); if (cur.value) loadLive()
   } finally {
     upgrading.value = false
   }
+}
+
+// refreshDetail 重新拉取当前详情（升级后版本/升级结果都靠它刷新）。
+// 失败不提示：节点重启期间短暂不可达属正常。
+async function refreshDetail() {
+  if (!cur.value) return
+  try {
+    const d = await get('/api/nodes/' + cur.value.id)
+    cur.value = { ...cur.value, ...d }
+  } catch {
+    /* 节点可能正在重启，忽略 */
+  }
+}
+
+// verifyUpgradeLanded 升级后核对节点实际上报的 Agent 版本（最多约 90 秒）。
+async function verifyUpgradeLanded(id, target) {
+  const norm = (s) => String(s || '').replace(/^v/i, '').split(/[-+]/)[0]
+  const want = norm(target)
+  for (let i = 0; i < 9; i++) {
+    await new Promise((r) => setTimeout(r, 10000))
+    await load()
+    const n = nodes.value.find((x) => x.id === id)
+    if (cur.value && cur.value.id === id) {
+      await refreshDetail()
+      loadLive()
+    }
+    if (n && want && norm(n.agent_version) === want) {
+      ElMessage.success(`节点已升级到 ${n.agent_version}`)
+      return
+    }
+  }
+  await refreshDetail()
+  ElMessage.warning({
+    message: '升级后节点上报的版本仍未变化，请在节点上执行 journalctl -u onecloud-panel-agent 查看升级日志',
+    duration: 12000,
+    showClose: true,
+  })
 }
 
 function pct(used, total) {
@@ -1890,6 +1974,14 @@ async function saveNetworkType() {
   font-size: 12px;
   color: #909399;
   white-space: nowrap;
+}
+
+/* 升级结果详情可能含换行（失败原因 + 时间）。 */
+.upgrade-detail {
+  white-space: pre-wrap;
+  word-break: break-all;
+  font-size: 12px;
+  line-height: 1.6;
 }
 .pin-body {
   margin: 14px 0 6px;

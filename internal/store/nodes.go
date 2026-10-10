@@ -16,14 +16,14 @@ func (s *Store) CreateNode(n *Node) (int64, error) {
 		`INSERT INTO nodes
 		 (name, mode, status, network_type, address, alt_address, agent_token_hash,
 		  hostname, os_name, os_version, kernel, arch, cpu_cores, mem_total, docker_version,
-		  docker_mirrors, docker_insecure_registries, agent_version, storage_json, auto_upgrade,
-		  last_seen, owner_user_id, tags, node_group,
+		  docker_mirrors, docker_insecure_registries, agent_version, storage_json, upgrade_json,
+		  auto_upgrade, last_seen, owner_user_id, tags, node_group,
 		  created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		n.Name, n.Mode, n.Status, n.NetworkType, n.Address, n.AltAddress,
 		n.AgentTokenHash, n.Hostname, n.OSName, n.OSVersion, n.Kernel, n.Arch,
 		n.CPUCores, n.MemTotal, n.DockerVersion,
-		n.DockerMirrors, n.DockerInsecureRegistries, n.AgentVersion, n.StorageJSON,
+		n.DockerMirrors, n.DockerInsecureRegistries, n.AgentVersion, n.StorageJSON, n.UpgradeJSON,
 		b2i(n.AutoUpgrade),
 		n.LastSeen, n.OwnerUserID, n.Tags, n.Group,
 		n.CreatedAt, n.UpdatedAt)
@@ -48,8 +48,8 @@ func (s *Store) ListNodes() ([]Node, error) {
 	rows, err := s.DB.Query(
 		`SELECT id, name, mode, status, network_type, address, alt_address, agent_token_hash,
 		        hostname, os_name, os_version, kernel, arch, cpu_cores, mem_total, docker_version,
-		        docker_mirrors, docker_insecure_registries, agent_version, storage_json, auto_upgrade,
-		        last_seen, owner_user_id, tags, node_group,
+		        docker_mirrors, docker_insecure_registries, agent_version, storage_json, upgrade_json,
+		        auto_upgrade, last_seen, owner_user_id, tags, node_group,
 		        created_at, updated_at
 		 FROM nodes ORDER BY (mode = 'local') DESC, id ASC`)
 	if err != nil {
@@ -71,8 +71,8 @@ type NodeListFilter struct {
 func (s *Store) ListNodesFiltered(f NodeListFilter) ([]Node, error) {
 	q := `SELECT id, name, mode, status, network_type, address, alt_address, agent_token_hash,
 		        hostname, os_name, os_version, kernel, arch, cpu_cores, mem_total, docker_version,
-		        docker_mirrors, docker_insecure_registries, agent_version, storage_json, auto_upgrade,
-		        last_seen, owner_user_id, tags, node_group, created_at, updated_at
+		        docker_mirrors, docker_insecure_registries, agent_version, storage_json, upgrade_json,
+		        auto_upgrade, last_seen, owner_user_id, tags, node_group, created_at, updated_at
 		  FROM nodes`
 	var conds []string
 	var args []any
@@ -134,12 +134,15 @@ func (s *Store) SetNodeTags(id int64, tags string) error {
 func (s *Store) UpdateNodeInfo(id int64, n *Node) error {
 	_, err := s.DB.Exec(
 		`UPDATE nodes SET hostname=?, os_name=?, os_version=?, kernel=?, arch=?,
-		   cpu_cores=?, mem_total=?, docker_version=?, agent_version=?, storage_json=?, last_seen=?,
+		   cpu_cores=?, mem_total=?, docker_version=?, agent_version=?, storage_json=?,
+		   upgrade_json = CASE WHEN ? <> '' THEN ? ELSE upgrade_json END,
+		   last_seen=?,
 		   network_type = CASE WHEN ? <> '' THEN ? ELSE network_type END,
 		   updated_at=?
 		 WHERE id=?`,
 		n.Hostname, n.OSName, n.OSVersion, n.Kernel, n.Arch,
-		n.CPUCores, n.MemTotal, n.DockerVersion, n.AgentVersion, n.StorageJSON, n.LastSeen,
+		n.CPUCores, n.MemTotal, n.DockerVersion, n.AgentVersion, n.StorageJSON,
+		n.UpgradeJSON, n.UpgradeJSON, n.LastSeen,
 		n.NetworkType, n.NetworkType, now(), id)
 	return err
 }
@@ -191,8 +194,8 @@ func (s *Store) DeleteNode(id int64) error {
 func (s *Store) node(where string, args ...any) (*Node, error) {
 	q := `SELECT id, name, mode, status, network_type, address, alt_address, agent_token_hash,
 	             hostname, os_name, os_version, kernel, arch, cpu_cores, mem_total, docker_version,
-	             docker_mirrors, docker_insecure_registries, agent_version, storage_json, auto_upgrade,
-	             last_seen, owner_user_id, tags, node_group,
+	             docker_mirrors, docker_insecure_registries, agent_version, storage_json, upgrade_json,
+	             auto_upgrade, last_seen, owner_user_id, tags, node_group,
 	             created_at, updated_at
 	      FROM nodes ` + where
 	n := &Node{}
@@ -202,8 +205,8 @@ func (s *Store) node(where string, args ...any) (*Node, error) {
 		&n.ID, &n.Name, &n.Mode, &n.Status, &n.NetworkType, &n.Address, &n.AltAddress,
 		&n.AgentTokenHash, &n.Hostname, &n.OSName, &n.OSVersion, &n.Kernel, &n.Arch,
 		&n.CPUCores, &n.MemTotal, &n.DockerVersion,
-		&n.DockerMirrors, &n.DockerInsecureRegistries, &n.AgentVersion, &n.StorageJSON, &autoUpgrade,
-		&n.LastSeen, &owner, &n.Tags, &n.Group,
+		&n.DockerMirrors, &n.DockerInsecureRegistries, &n.AgentVersion, &n.StorageJSON, &n.UpgradeJSON,
+		&autoUpgrade, &n.LastSeen, &owner, &n.Tags, &n.Group,
 		&n.CreatedAt, &n.UpdatedAt)
 	n.AutoUpgrade = autoUpgrade != 0
 	if errors.Is(err, sql.ErrNoRows) {
@@ -235,8 +238,8 @@ func scanNodes(rows *sql.Rows) ([]Node, error) {
 			&n.ID, &n.Name, &n.Mode, &n.Status, &n.NetworkType, &n.Address, &n.AltAddress,
 			&n.AgentTokenHash, &n.Hostname, &n.OSName, &n.OSVersion, &n.Kernel, &n.Arch,
 			&n.CPUCores, &n.MemTotal, &n.DockerVersion,
-			&n.DockerMirrors, &n.DockerInsecureRegistries, &n.AgentVersion, &n.StorageJSON, &autoUpgrade,
-			&n.LastSeen, &owner, &n.Tags, &n.Group,
+			&n.DockerMirrors, &n.DockerInsecureRegistries, &n.AgentVersion, &n.StorageJSON, &n.UpgradeJSON,
+			&autoUpgrade, &n.LastSeen, &owner, &n.Tags, &n.Group,
 			&n.CreatedAt, &n.UpdatedAt); err != nil {
 			return nil, err
 		}

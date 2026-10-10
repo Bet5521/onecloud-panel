@@ -24,7 +24,7 @@ func TestSystemNotificationChannelNotUserSelectable(t *testing.T) {
 		t.Helper()
 		w := do(t, h, "POST", "/api/notifications/channels", map[string]any{
 			"type": "wxpusher", "name": name,
-			"config": map[string]string{"app_token": "AT_test", "topic": "1"},
+			"config":  map[string]string{"app_token": "AT_test", "topic": "1"},
 			"enabled": true, "system": system,
 		}, jar)
 		if w.Code != http.StatusOK {

@@ -14,36 +14,39 @@ import (
 	"onecloud-panel/internal/notify"
 	"onecloud-panel/internal/store"
 	"onecloud-panel/internal/system"
+	"onecloud-panel/internal/version"
 )
 
 // NodeDTO 节点对外结构：附加在线/可达状态。
 type NodeDTO struct {
-	ID                       int64  `json:"id"`
-	Name                     string `json:"name"`
-	Mode                     string `json:"mode"`
-	Status                   string `json:"status"`
-	NetworkType              string `json:"network_type"`
-	Address                  string `json:"address"`
-	AltAddress               string `json:"alt_address"`
-	Hostname                 string `json:"hostname"`
-	OSName                   string `json:"os_name"`
-	OSVersion                string `json:"os_version"`
-	Kernel                   string `json:"kernel"`
-	Arch                     string `json:"arch"`
-	CPUCores                 int    `json:"cpu_cores"`
-	MemTotal                 int64  `json:"mem_total"`
-	Docker                   string `json:"docker_version"`
-	DockerMirrors            string `json:"docker_mirrors"`
-	DockerInsecureRegistries string `json:"docker_insecure_registries"`
-	LastSeen                 int64  `json:"last_seen"`
-	OwnerUserID              *int64 `json:"owner_user_id"`
-	Online                   bool   `json:"online"`
-	Reachable                bool   `json:"reachable"`
-	Tags                     string                  `json:"tags"`
-	Group                    string                  `json:"node_group"`
-	AgentVersion             string                  `json:"agent_version"`
-	Storage                  []system.StorageDevice  `json:"storage,omitempty"`
-	AutoUpgrade              bool                    `json:"auto_upgrade"`
+	ID                       int64                  `json:"id"`
+	Name                     string                 `json:"name"`
+	Mode                     string                 `json:"mode"`
+	Status                   string                 `json:"status"`
+	NetworkType              string                 `json:"network_type"`
+	Address                  string                 `json:"address"`
+	AltAddress               string                 `json:"alt_address"`
+	Hostname                 string                 `json:"hostname"`
+	OSName                   string                 `json:"os_name"`
+	OSVersion                string                 `json:"os_version"`
+	Kernel                   string                 `json:"kernel"`
+	Arch                     string                 `json:"arch"`
+	CPUCores                 int                    `json:"cpu_cores"`
+	MemTotal                 int64                  `json:"mem_total"`
+	Docker                   string                 `json:"docker_version"`
+	DockerMirrors            string                 `json:"docker_mirrors"`
+	DockerInsecureRegistries string                 `json:"docker_insecure_registries"`
+	LastSeen                 int64                  `json:"last_seen"`
+	OwnerUserID              *int64                 `json:"owner_user_id"`
+	Online                   bool                   `json:"online"`
+	Reachable                bool                   `json:"reachable"`
+	Tags                     string                 `json:"tags"`
+	Group                    string                 `json:"node_group"`
+	AgentVersion             string                 `json:"agent_version"`
+	Storage                  []system.StorageDevice `json:"storage,omitempty"`
+	AutoUpgrade              bool                   `json:"auto_upgrade"`
+	// Upgrade 最近一次 Agent 自升级结果（由 Agent 随心跳上报）。
+	Upgrade *agent.UpgradeResult `json:"upgrade,omitempty"`
 }
 
 func toDTO(n *store.Node) NodeDTO {
@@ -65,6 +68,15 @@ func toDTO(n *store.Node) NodeDTO {
 		var st []system.StorageDevice
 		if err := json.Unmarshal([]byte(n.StorageJSON), &st); err == nil {
 			d.Storage = st
+		}
+	}
+	if n.UpgradeJSON != "" {
+		var up agent.UpgradeResult
+		if err := json.Unmarshal([]byte(n.UpgradeJSON), &up); err == nil {
+			// 目标版本与实际运行版本不一致 ⇒ 二进制已替换但没重启生效。
+			// 以当前上报的 agent_version 为准，避免展示过期的自我判断。
+			up.AppliedVersion = n.AgentVersion
+			d.Upgrade = &up
 		}
 	}
 	if n.Address != "" {
@@ -465,7 +477,9 @@ func (a *API) rotateNodeToken(w http.ResponseWriter, r *http.Request) {
 // ---- 节点 Agent 自升级 ----
 
 // POST /api/nodes/{id}/upgrade — 手动触发的节点 Agent 自升级。
-// 面板将自身正在运行的二进制作为升级包推送至节点 Agent，Agent 下载替换后重启自身单元。
+// 面板将匹配节点架构的二进制推送至节点 Agent；Agent **同步**完成下载、校验、
+// 试运行与原子替换后才应答，因此这里返回成功即代表二进制确实已就位
+// （失败会带真实原因返回 400，而不是只回一句“指令已下发”）。
 func (a *API) upgradeNode(w http.ResponseWriter, r *http.Request) {
 	id, err := idFromPath(r)
 	if err != nil {
@@ -477,7 +491,10 @@ func (a *API) upgradeNode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.audit.Record(r, "node", "upgrade", "node", strconv.FormatInt(id, 10), audit.ResultSuccess, "")
-	writeJSON(w, map[string]string{"status": "upgrade_started"})
+	writeJSON(w, map[string]any{
+		"status":         "upgrade_started",
+		"target_version": version.Version,
+	})
 }
 
 // GET /api/agent-binary — 向节点 Agent 提供与其架构匹配的升级包。

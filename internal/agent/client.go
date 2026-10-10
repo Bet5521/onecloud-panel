@@ -50,12 +50,14 @@ func Register(ctx context.Context, server, registerToken string, port int, insec
 }
 
 // Heartbeat 发送心跳，返回面板要求轮换的新 Token（可能为空）。
-func Heartbeat(ctx context.Context, server, token string, host *system.HostInfo, insecure bool, pin string) (*HeartbeatResponse, error) {
+// up 为最近一次自升级结果（可为 nil），面板据此展示升级成败。
+func Heartbeat(ctx context.Context, server, token string, host *system.HostInfo,
+	up *UpgradeResult, insecure bool, pin string) (*HeartbeatResponse, error) {
 	dctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	dockerVer, _ := docker.DetectLocal(dctx)
 	cancel()
 	body, _ := json.Marshal(&HeartbeatRequest{
-		Token: token, Host: host, DockerVersion: dockerVer,
+		Token: token, Host: host, DockerVersion: dockerVer, Upgrade: up,
 	})
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
 		panelURL(server, pathHeartbeat), bytes.NewReader(body))

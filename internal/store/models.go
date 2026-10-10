@@ -94,6 +94,7 @@ type Node struct {
 	DockerInsecureRegistries string
 	AgentVersion             string
 	StorageJSON              string
+	UpgradeJSON              string // 最近一次 Agent 自升级结果（JSON，空串=未知）
 	AutoUpgrade              bool
 	LastSeen                 int64
 	OwnerUserID              *int64 // 节点归属用户；NULL=系统节点(如 local)，仅管理员可见

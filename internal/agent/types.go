@@ -23,6 +23,9 @@ type HeartbeatRequest struct {
 	Token         string           `json:"token"`
 	Host          *system.HostInfo `json:"host"`
 	DockerVersion string           `json:"docker_version,omitempty"`
+	// Upgrade 最近一次自升级结果；面板据此把「升级失败原因 / 替换了但没生效」
+	// 展示到节点详情，而不是只显示一条“指令已下发”。
+	Upgrade *UpgradeResult `json:"upgrade,omitempty"`
 }
 
 // HeartbeatResponse 心跳应答；RotateToken 非空时 Agent 切换 Token。

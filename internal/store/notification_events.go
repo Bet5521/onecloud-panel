@@ -11,7 +11,7 @@ import (
 // NotificationSchedule 定时状态摘要设置（单行）。
 type NotificationSchedule struct {
 	Enabled       bool
-	IntervalHours int    // 仅允许 1/6/12/24
+	IntervalHours int // 仅允许 1/6/12/24
 	IncludeNodes  bool
 	IncludeApps   bool
 	ChannelIDs    []int64

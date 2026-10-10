@@ -10,22 +10,33 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
 	"onecloud-panel/internal/executor"
 	"onecloud-panel/internal/system"
+	"onecloud-panel/internal/version"
 )
 
 type server struct {
-	exec       executor.Executor
-	tok        *tokenHolder
-	serverURL  string // 面板地址（来自注册时的 state.Server），用于解析相对下载 URL
-	unit       string // 自升级后重启所用的 systemd 单元名
+	exec      executor.Executor
+	tok       *tokenHolder
+	serverURL string // 面板地址（来自注册时的 state.Server），用于解析相对下载 URL
+	unit      string // 自升级后重启所用的 systemd 单元名
+	dataDir   string // Agent 数据目录（升级结果落盘位置）
+
+	upgrading  atomic.Bool    // 同一时刻只允许一个自升级任务
+	upgradeMu  sync.Mutex     // 保护 upgradeRes
+	upgradeRes *UpgradeResult // 最近一次自升级结果，随心跳上报给面板
 }
 
-func newServer(tok *tokenHolder, serverURL, unit string) *server {
-	return &server{exec: executor.NewLocal(nil), tok: tok, serverURL: serverURL, unit: unit}
+func newServer(tok *tokenHolder, serverURL, unit, dataDir string) *server {
+	return &server{
+		exec: executor.NewLocal(nil), tok: tok, serverURL: serverURL,
+		unit: unit, dataDir: dataDir,
+	}
 }
 
 func (s *server) mux() http.Handler {
@@ -264,71 +275,66 @@ func (s *server) resolveURL(u string) string {
 	return strings.TrimRight(s.serverURL, "/") + u
 }
 
-// agentUpgrade 接收面板下发的升级指令：从相对 URL 下载新二进制，原子替换自身后重启单元。
-// 由于重启会终止本进程，下载与替换先同步完成并响应，再延迟触发重启。
+// agentUpgrade 接收面板下发的升级指令：下载新二进制 → 试运行校验 → 原子替换自身 →
+// 重启单元。
+//
+// 下载/校验/替换**同步**完成并把真实失败原因回给面板：旧实现整段扔进 goroutine
+// 后立即回 200，面板只能看到“指令已下发”，节点实际没升级时既不报错也无感知。
+// 重启会终止本进程，故放在应答写出之后由后台触发。
 func (s *server) agentUpgrade(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		URL    string `json:"url"`
-		SHA256 string `json:"sha256"`
-	}
+	var req UpgradeReq
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.URL == "" {
 		agentError(w, http.StatusBadRequest, "请求格式错误")
 		return
 	}
-	full := s.resolveURL(req.URL)
-	go s.doUpgrade(full, req.SHA256)
-	writeAgentJSON(w, map[string]string{"status": "upgrade_started"})
-}
-
-func (s *server) doUpgrade(fullURL, sha string) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-	defer cancel()
-
+	if !s.upgrading.CompareAndSwap(false, true) {
+		agentError(w, http.StatusConflict, "已有升级任务正在进行，请稍后重试")
+		return
+	}
 	dl, ok := s.exec.(executor.Downloader)
 	if !ok {
-		log.Printf("升级: 执行器不支持下载，放弃")
-		return
-	}
-	tmp, err := os.CreateTemp("", "ocp-upgrade-*.bin")
-	if err != nil {
-		log.Printf("升级: 创建临时文件失败: %v", err)
-		return
-	}
-	tmpPath := tmp.Name()
-	_ = tmp.Close()
-	defer os.Remove(tmpPath)
-
-	if err := dl.Download(ctx, fullURL, tmpPath, 0o755, sha, nil); err != nil {
-		log.Printf("升级: 下载失败: %v", err)
+		s.upgrading.Store(false)
+		agentError(w, http.StatusInternalServerError, "本机执行器不支持下载，无法自升级")
 		return
 	}
 
-	exe, err := os.Executable()
+	full := s.resolveURL(req.URL)
+	ctx, cancel := context.WithTimeout(context.Background(), upgradeTimeout)
+	defer cancel()
+
+	exe, err := selfPath()
+	if err == nil {
+		err = applyUpgrade(ctx, exe, dl, full, req.SHA256)
+	}
+	res := UpgradeResult{
+		TargetVersion:  req.Version,
+		AppliedVersion: version.Version,
+		At:             time.Now().Unix(),
+		OK:             err == nil,
+	}
 	if err != nil {
-		log.Printf("升级: 定位自身二进制失败: %v", err)
+		res.Error = err.Error()
+		s.setUpgradeResult(res)
+		s.upgrading.Store(false)
+		log.Printf("自升级失败：%v", err)
+		agentError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	// 原子替换：rename 在同一文件系统上交换目录项，运行中的旧进程仍持有旧 inode。
-	if err := os.Rename(tmpPath, exe); err != nil {
-		// 跨设备时回退为复制覆盖
-		if cpErr := copyFile(exe, tmpPath); cpErr != nil {
-			log.Printf("升级: 替换二进制失败: rename=%v cp=%v", err, cpErr)
-			return
-		}
-	}
-	log.Printf("升级: 二进制已更新，即将重启单元 %s", s.unit)
-	// 略作延迟，确保上面的 HTTP 响应已发出
-	time.Sleep(500 * time.Millisecond)
-	_, _ = s.exec.Exec(context.Background(), "systemctl", "restart", s.unit)
-}
+	s.setUpgradeResult(res)
+	log.Printf("自升级：二进制已替换（运行版本 %s → 目标 %s），即将重启单元 %s",
+		version.Version, req.Version, s.unit)
 
-// copyFile 将 src 复制到 dst 路径（覆盖），用于跨设备替换场景。
-func copyFile(dst, src string) error {
-	b, err := os.ReadFile(src)
-	if err != nil {
-		return err
+	writeAgentJSON(w, map[string]any{
+		"status":          "upgrade_started",
+		"proto":           UpgradeProto,
+		"current_version": version.Version,
+		"target_version":  req.Version,
+	})
+	// 显式冲刷，保证面板先收到应答，再由后台重启本进程。
+	if f, ok := w.(http.Flusher); ok {
+		f.Flush()
 	}
-	return os.WriteFile(dst, b, 0o755)
+	go s.restartUnit()
 }
 
 func (s *server) healthcheck(w http.ResponseWriter, r *http.Request) {

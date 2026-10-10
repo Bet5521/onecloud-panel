@@ -62,10 +62,11 @@ func TestRegisterAndHeartbeat(t *testing.T) {
 	}
 }
 
-func startAgentServer() (*tokenHolder, http.Handler) {
+func startAgentServer(t *testing.T) (*tokenHolder, http.Handler) {
+	t.Helper()
 	h := &tokenHolder{}
 	h.set("good-token")
-	return h, newServer(h, "", "").mux()
+	return h, newServer(h, "", "", t.TempDir()).mux()
 }
 
 func agentDo(h http.Handler, method, path string, body any, token string) *httptest.ResponseRecorder {
@@ -83,7 +84,7 @@ func agentDo(h http.Handler, method, path string, body any, token string) *httpt
 }
 
 func TestAgentTokenAuth(t *testing.T) {
-	_, h := startAgentServer()
+	_, h := startAgentServer(t)
 
 	// healthz 无需 token
 	w := agentDo(h, "GET", "/healthz", nil, "")
@@ -122,7 +123,7 @@ func TestAgentTokenAuth(t *testing.T) {
 }
 
 func TestAgentFileAndRotate(t *testing.T) {
-	holder, h := startAgentServer()
+	holder, h := startAgentServer(t)
 
 	// PUT 文件（写到临时目录）
 	p := filepath.Join(t.TempDir(), "conf.txt")
@@ -170,7 +171,7 @@ func TestAgentFileAndRotate(t *testing.T) {
 // 非法 UTF-8 字节替换成 U+FFFD（EF BF BD），导致文件体积膨胀且内容损坏。
 // 真机表现为自定义应用 systemd 单元启动即 "Exec format error"（status=203/EXEC）。
 func TestAgentBinaryFileRoundTrip(t *testing.T) {
-	_, h := startAgentServer()
+	_, h := startAgentServer(t)
 	p := filepath.Join(t.TempDir(), "bin")
 
 	// 构造含 ELF 魔数 + 大量非法 UTF-8 字节的载荷
@@ -271,7 +272,7 @@ func TestHeartbeatParsesNodeID(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	resp, err := Heartbeat(ctx, srv.URL, "tok", nil, false, "")
+	resp, err := Heartbeat(ctx, srv.URL, "tok", nil, nil, false, "")
 	if err != nil {
 		t.Fatalf("heartbeat: %v", err)
 	}

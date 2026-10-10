@@ -196,6 +196,12 @@ func (s *Service) Heartbeat(req *agent.HeartbeatRequest) (*store.Node, error) {
 		applyHost(n, req.Host)
 		n.DockerVersion = req.DockerVersion
 		n.LastSeen = time.Now().Unix()
+		// 升级结果由 Agent 上报（含失败原因 / 替换了但未生效），落库供界面展示。
+		if req.Upgrade != nil {
+			if b, err := json.Marshal(req.Upgrade); err == nil {
+				n.UpgradeJSON = string(b)
+			}
+		}
 		if err := s.store.UpdateNodeInfo(n.ID, n); err != nil {
 			return nil, err
 		}
@@ -268,10 +274,105 @@ func (s *Service) UpgradeAgent(ctx context.Context, id int64) error {
 	}
 	cli := agentclient.New(n.Address, tok)
 	url := "/api/agent-binary?t=" + url.QueryEscape(tok)
-	if err := cli.UpgradeAgent(ctx, url); err != nil {
-		return fmt.Errorf("升级指令下发失败: %w", err)
+	return agentUpgradeWithFallback(ctx, cli, url)
+}
+
+// agentUpgradeWithFallback 向节点下发自升级：
+//   - 新版 Agent（应答带 proto >= agent.UpgradeProto）：由它自己**同步**完成
+//     下载/校验/替换，失败原因直接返回，不再出现「已下发但纹丝不动」；
+//   - 旧版 Agent（应答无 proto）：其自升级实现存在必然失败的缺陷（临时文件落
+//     在 systemd 私有 /tmp → 跨设备 rename EXDEV，回退又是覆盖写运行中的
+//     二进制 → ETXTBSY），改由面板驱动冷替换完成引导。
+func agentUpgradeWithFallback(ctx context.Context, cli *agentclient.Client, binURL string) error {
+	proto, err := cli.UpgradeAgent(ctx, binURL, version.Version)
+	if err != nil {
+		return fmt.Errorf("升级失败：%w", err)
+	}
+	if proto >= agent.UpgradeProto {
+		return nil
+	}
+	if err := coldSwapAgent(ctx, cli, binURL); err != nil {
+		return fmt.Errorf("升级失败（节点 Agent 为旧版，已尝试面板驱动替换）：%w", err)
 	}
 	return nil
+}
+
+// coldSwapAgent 通过 Agent 既有的 /v1/exec + /v1/download 在节点上完成一次
+// 二进制替换，专门用于引导「跑着旧版 Agent」的节点。
+//
+// 思路：旧 Agent 无法替换自身，但它能替我们执行命令。于是由面板驱动：
+// 定位 Agent 自身可执行文件 → 把新二进制下载到**同目录的 .new 路径**
+// （不同名，天然规避 ETXTBSY）→ 试运行确认架构匹配 → `mv -f` 原子就位
+// （rename 覆盖目录项，运行中的旧进程继续持有旧 inode，安全）→ 重启服务。
+//
+// 不依赖 curl，也不依赖节点上存在任何额外工具（只用 sh/mv/sed）。
+func coldSwapAgent(ctx context.Context, cli *agentclient.Client, binURL string) error {
+	exe, err := agentSelfPath(ctx, cli)
+	if err != nil {
+		return err
+	}
+	newPath := exe + ".new"
+	if err := cli.Download(ctx, binURL, newPath, 0o755, "", nil); err != nil {
+		return fmt.Errorf("下发升级包失败：%w", err)
+	}
+	// 就位脚本只做「校验 + mv」，不触发重启：这样调用必定有确定结果，
+	// 不会因为服务重启把连接掐断而误判失败。
+	script := strings.Join([]string{
+		"set -e",
+		`NEW=` + shQuote(newPath),
+		`EXE=` + shQuote(exe),
+		`[ -f "$NEW" ] || { echo "升级包不存在"; exit 9; }`,
+		`chmod 0755 "$NEW"`,
+		`"$NEW" version >/dev/null 2>&1 || { echo "升级包与本机架构不匹配或无法运行"; exit 10; }`,
+		`mv -f "$NEW" "$EXE"`,
+		// 从自身 cgroup 反查单元名（权威且不依赖默认值），取不到时回落默认。
+		`UNIT=$(sed -n 's#^[0-9]*::/system.slice/##p' /proc/$PPID/cgroup 2>/dev/null | head -1)`,
+		`[ -n "$UNIT" ] || UNIT=onecloud-panel-agent.service`,
+		`echo "replaced=$EXE unit=$UNIT"`,
+	}, "\n")
+
+	res, err := cli.ExecLong(ctx, "sh", "-c", script)
+	if err != nil {
+		return fmt.Errorf("替换二进制失败：%w", err)
+	}
+	if res.ExitCode != 0 {
+		return fmt.Errorf("替换二进制失败（退出码 %d）：%s", res.ExitCode, strings.TrimSpace(res.Output))
+	}
+	unit := parseUnitFromOutput(res.Output)
+	// 重启会终止 Agent，连接必然中断，故忽略错误；升级是否生效由后续心跳中的
+	// Agent 版本自行体现（面板界面会重新拉取版本）。
+	_, _ = cli.Systemctl(ctx, "restart", unit)
+	return nil
+}
+
+// agentSelfPath 取节点 Agent 自身可执行文件的真实路径。
+// 借助 /proc/$PPID/exe：Agent 通过 sh -c 执行本脚本，sh 的父进程正是 Agent，
+// 因此能直接拿到它的可执行文件（并自动解析符号链接），无需猜测安装路径。
+func agentSelfPath(ctx context.Context, cli *agentclient.Client) (string, error) {
+	res, err := cli.Exec(ctx, "sh", "-c", `readlink -f /proc/$PPID/exe 2>/dev/null || readlink /proc/$PPID/exe`)
+	if err != nil {
+		return "", fmt.Errorf("定位 Agent 可执行文件失败：%w", err)
+	}
+	p := strings.TrimSpace(res.Output)
+	if res.ExitCode != 0 || !strings.HasPrefix(p, "/") {
+		return "", fmt.Errorf("定位 Agent 可执行文件失败（输出：%s）", p)
+	}
+	return p, nil
+}
+
+// parseUnitFromOutput 从就位脚本输出中解析 systemd 单元名。
+func parseUnitFromOutput(out string) string {
+	for _, f := range strings.Fields(out) {
+		if v, ok := strings.CutPrefix(f, "unit="); ok && v != "" {
+			return v
+		}
+	}
+	return "onecloud-panel-agent.service"
+}
+
+// shQuote 用单引号安全包裹 shell 参数（内部单引号按 POSIX 规则转义）。
+func shQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
 // isOlder 判断版本 a 是否严格落后于版本 b（仅支持语义化版本，解析失败返回 false）。

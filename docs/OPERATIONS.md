@@ -148,7 +148,7 @@ curl -s http://127.0.0.1:8080/healthz
 
 ### 4.2 升级 Agent
 
-从面板 UI 对节点执行「升级」，或在节点上：
+从面板 UI 对节点执行「升级」（节点详情 → 节点升级 → 立即升级 Agent），或在节点上手工升级：
 
 ```bash
 install -m 0755 /path/to/onecloud-panel-linux-armv7 /usr/local/bin/onecloud-panel
@@ -156,6 +156,32 @@ systemctl restart onecloud-panel-agent
 ```
 
 > 面板与 Agent 二进制是同一个文件，按 `panel` / `agent` 子命令区分模式。
+
+面板发起升级的完整流程与结果反馈：
+
+1. 面板按节点架构挑选升级包（同架构直接用面板自身二进制；跨架构从本地发布目录或
+   在线 Release 取对应产物），并通过 `/v1/agent-upgrade` 下发给节点 Agent。
+2. Agent **同步**完成「下载 → 试运行校验 → 原子替换」，失败原因会作为错误原样
+   返回并显示在面板上（例如「下载升级包失败」「升级包与本机架构不匹配」）。
+   只有确实替换成功，面板才会提示“升级包已就位”。
+3. 替换成功后 Agent 重启自身单元，随后由心跳上报新版本；面板会自动核对版本变化，
+   未变化则提示查看节点日志。
+4. 结果（目标版本 / 是否成功 / 失败原因 / 时间）由 Agent 随心跳上报并入库，
+   展示在节点详情的「节点升级」卡片中，包括“已替换但服务未重启”这种半成功状态。
+
+> 节点上跑的是**旧版** Agent 时，它自身的升级实现无法替换自己（临时文件落在
+> systemd 私有 `/tmp`，跨设备 rename 必然失败；旧的跨设备回退又是覆盖写运行中的
+> 二进制，必然 `Text file busy`）。面板检测到旧版 Agent 会自动改用**面板驱动替换**：
+> 下载新二进制到 `<agent路径>.new` → 试运行校验 → `mv` 原子就位 → 重启单元。
+> 该路径只用 `/v1/exec` + `/v1/download`，因此老节点无需手工介入即可升上来。
+
+升级没有生效时的排查顺序（节点上执行）：
+
+```bash
+journalctl -u onecloud-panel-agent -n 100 --no-pager   # 看「自升级」日志
+ls -l /proc/$(systemctl show -p MainPID --value onecloud-panel-agent)/exe
+systemctl status onecloud-panel-agent --no-pager
+```
 
 ### 4.3 面板在线更新（推荐）
 

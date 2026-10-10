@@ -59,24 +59,29 @@ func Run(cfg *config.Agent) error {
 	holder := &tokenHolder{}
 	holder.set(state.Token)
 
-	srv := &http.Server{
+	srv := newServer(holder, state.Server, cfg.Unit, cfg.DataDir)
+	// 上一次自升级的结果落盘在数据目录；重启后读回，随首次心跳带给面板，
+	// 这样升级结果不会因为“重启把内存清空”而丢失。
+	srv.upgradeRes = loadUpgradeResult(cfg.DataDir)
+
+	httpSrv := &http.Server{
 		Addr:              cfg.Listen,
-		Handler:           newServer(holder, state.Server, cfg.Unit).mux(),
+		Handler:           srv.mux(),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
-	go heartbeatLoop(ctx, cfg.DataDir, state, holder, cfg.InsecureTLS, cfg.TLSPin)
+	go heartbeatLoop(ctx, cfg.DataDir, state, holder, srv, cfg.InsecureTLS, cfg.TLSPin)
 
 	go func() {
 		<-ctx.Done()
 		shCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		_ = srv.Shutdown(shCtx)
+		_ = httpSrv.Shutdown(shCtx)
 	}()
 
 	log.Printf("%s Agent 启动，监听 %s，面板 %s，%s",
 		version.Print(), cfg.Listen, state.Server, nodeLabel(state.NodeID))
-	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+	if err := httpSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}
 	return nil
@@ -103,7 +108,8 @@ func registerLoop(ctx context.Context, state *State, registerToken string, port 
 	}
 }
 
-func heartbeatLoop(ctx context.Context, dataDir string, state *State, holder *tokenHolder, insecure bool, pin string) {
+func heartbeatLoop(ctx context.Context, dataDir string, state *State, holder *tokenHolder,
+	srv *server, insecure bool, pin string) {
 	beat := func() {
 		host, err := system.Collect()
 		if err != nil {
@@ -112,7 +118,7 @@ func heartbeatLoop(ctx context.Context, dataDir string, state *State, holder *to
 		}
 		hctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 		defer cancel()
-		resp, err := Heartbeat(hctx, state.Server, holder.get(), host, insecure, pin)
+		resp, err := Heartbeat(hctx, state.Server, holder.get(), host, srv.upgradeSnapshot(), insecure, pin)
 		if err != nil {
 			log.Printf("心跳失败: %v", err)
 			return

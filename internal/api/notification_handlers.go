@@ -20,6 +20,7 @@ type notificationChannelDTO struct {
 	Name       string         `json:"name"`
 	Config     map[string]any `json:"config"`
 	Enabled    bool           `json:"enabled"`
+	System     bool           `json:"system"`     // 系统通知：不可被用户选作个人通知方式
 	Configured bool           `json:"configured"` // 配置是否完整（可成功构建发送器）
 	Events     []string       `json:"events"`     // 订阅的事件编码列表
 	TestedAt   int64          `json:"tested_at"`
@@ -98,6 +99,7 @@ func (a *API) channelDTO(c store.NotificationChannel) notificationChannelDTO {
 		Name:       c.Name,
 		Config:     maskConfig(c.Type, parseConfig(c.ConfigJSON)),
 		Enabled:    c.Enabled,
+		System:     c.System,
 		Configured: configured == nil,
 		Events:     events,
 		TestedAt:   c.TestedAt,
@@ -109,6 +111,7 @@ type channelReq struct {
 	Name    string            `json:"name"`
 	Config  map[string]string `json:"config"`
 	Enabled *bool             `json:"enabled"`
+	System  *bool             `json:"system"` // 是否系统通知
 	Events  []string          `json:"events"` // 订阅的事件编码列表
 }
 
@@ -192,6 +195,7 @@ func (a *API) createNotificationChannel(w http.ResponseWriter, r *http.Request) 
 	}
 	c, err := a.store.CreateNotificationChannel(&store.NotificationChannel{
 		Type: req.Type, Name: req.Name, ConfigJSON: cfgJSON, Enabled: enabled,
+		System: req.System != nil && *req.System,
 	})
 	if err != nil {
 		writeError(w, 500, "创建通知通道失败")
@@ -257,7 +261,11 @@ func (a *API) updateNotificationChannel(w http.ResponseWriter, r *http.Request) 
 		}
 		notifyEvents = evs
 	}
-	if err := a.store.UpdateNotificationChannel(id, name, cfgJSON, enabled); err != nil {
+	system := c.System
+	if req.System != nil {
+		system = *req.System
+	}
+	if err := a.store.UpdateNotificationChannel(id, name, cfgJSON, enabled, system); err != nil {
 		writeError(w, 500, "更新通知通道失败")
 		return
 	}

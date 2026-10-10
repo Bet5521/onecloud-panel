@@ -85,6 +85,9 @@ func (a *API) validateNotify(method string, channelID int64, target *string) err
 	if !ch.Enabled {
 		return errors.New("通知通道未启用")
 	}
+	if ch.System {
+		return errors.New("该通道为系统通知通道，不能作为用户个人通知方式")
+	}
 	if meta := notify.TargetFor(ch.Type); meta.Needed && strings.TrimSpace(derefStr(target)) == "" {
 		return errors.New("该通道需要填写接收标识：" + meta.Label)
 	}
@@ -127,6 +130,10 @@ func (a *API) listMyNotifyChannels(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]notifyChannelOption, 0, len(channels))
 	for _, c := range channels {
+		// 系统通知通道仅用于系统级下发（如密码重置码），不进入用户可选列表。
+		if c.System {
+			continue
+		}
 		// 配置未完成的通道不出现在用户可选列表（满足「未配置的不可选」）
 		if _, berr := notify.Build(c.Type, parseConfig(c.ConfigJSON)); berr != nil {
 			continue

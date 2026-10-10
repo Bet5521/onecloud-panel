@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"net/http"
 
 	"onecloud-panel/internal/apps"
@@ -14,6 +15,7 @@ import (
 	"onecloud-panel/internal/self"
 	"onecloud-panel/internal/storage"
 	"onecloud-panel/internal/store"
+	"onecloud-panel/internal/update"
 	"onecloud-panel/internal/version"
 )
 
@@ -33,6 +35,7 @@ type API struct {
 	selfSvc      *self.Service
 	sessions     *auth.Manager
 	releaseDir   string
+	releaseFetch func(ctx context.Context, proxy string) (*update.Release, error)
 	dataDir      string
 	listenAddr   string
 	resetLimit   *auth.LoginLimiter
@@ -78,6 +81,11 @@ func (a *API) SetSessionManager(m *auth.Manager) {
 // SetReleaseDir 注入发布二进制目录（供 /dl 下载各架构二进制）。
 func (a *API) SetReleaseDir(dir string) {
 	a.releaseDir = dir
+}
+
+// SetReleaseFetcher 注入 Release 查询实现（仅测试使用）；nil 时使用真实 GitHub API。
+func (a *API) SetReleaseFetcher(f func(ctx context.Context, proxy string) (*update.Release, error)) {
+	a.releaseFetch = f
 }
 
 // SetListenAddr 注入面板实际监听地址（Host 头缺端口时据此补全，避免硬编码端口）。
@@ -129,6 +137,9 @@ func (a *API) Handler() http.Handler {
 		auth.RequirePermission(store.PermNodeWrite, http.HandlerFunc(a.manualAddNode))))
 	mux.Handle("POST /api/nodes/ssh-install", a.mw.RequireAuth(
 		auth.RequirePermission(store.PermNodeWrite, http.HandlerFunc(a.sshInstallNode))))
+	// 主机指纹探测：仅完成 SSH 握手，返回指纹与是否首次连接，供前端自动识别。
+	mux.Handle("POST /api/nodes/ssh-hostkey", a.mw.RequireAuth(
+		auth.RequirePermission(store.PermNodeWrite, http.HandlerFunc(a.sshProbeHostKey))))
 	// 进度端点用查询参数承载任务 ID：路径式 /api/nodes/ssh-install/{id} 会与
 	// /api/nodes/{id}/info 等模式冲突导致 ServeMux 注册 panic。
 	mux.Handle("GET /api/nodes/ssh-install", a.mw.RequireAuth(

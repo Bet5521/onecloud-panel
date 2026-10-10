@@ -3,10 +3,7 @@ package api
 import (
 	"encoding/json"
 	"fmt"
-	"io"
-	"log"
 	"net/http"
-	"os"
 	"strconv"
 	"time"
 
@@ -483,40 +480,30 @@ func (a *API) upgradeNode(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]string{"status": "upgrade_started"})
 }
 
-// GET /api/agent-binary — 向节点 Agent 提供面板自身二进制作为升级包。
+// GET /api/agent-binary — 向节点 Agent 提供与其架构匹配的升级包。
 // 鉴权使用节点长期 Token（查询参数 t），无需登录会话（Agent 侧无会话态）。
+// 架构一致时直接下发面板自身二进制；否则取本地发布目录或在线 Release 对应产物，
+// 避免把面板架构的二进制推给异构节点导致 Agent 无法启动。
 func (a *API) agentBinary(w http.ResponseWriter, r *http.Request) {
 	tok := r.URL.Query().Get("t")
 	if tok == "" {
 		writeError(w, http.StatusUnauthorized, "缺少 Token")
 		return
 	}
-	if _, err := a.store.GetNodeByToken(tok); err != nil {
+	n, err := a.store.GetNodeByToken(tok)
+	if err != nil {
 		writeError(w, http.StatusUnauthorized, "Token 无效")
 		return
 	}
-	exe, err := os.Executable()
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "定位二进制失败")
+	if n.Mode == "local" {
+		a.serveOwnExecutable(w)
 		return
 	}
-	f, err := os.Open(exe)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "读取二进制失败")
+	name := releaseAssetName(n.Arch)
+	if name == "" {
+		writeError(w, http.StatusBadRequest,
+			fmt.Sprintf("节点架构未知或不支持（arch=%q），无法下发升级包", n.Arch))
 		return
 	}
-	defer f.Close()
-	fi, err := f.Stat()
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "读取二进制信息失败")
-		return
-	}
-	w.Header().Set("Content-Type", "application/octet-stream")
-	w.Header().Set("Content-Length", strconv.FormatInt(fi.Size(), 10))
-	w.Header().Set("Content-Disposition", "attachment; filename=\"onecloud-panel-agent\"")
-	w.Header().Set("Cache-Control", "no-store")
-	w.WriteHeader(http.StatusOK)
-	if _, err := io.Copy(w, f); err != nil {
-		log.Printf("agent-binary 下载写出失败: %v", err)
-	}
+	a.serveReleaseBinary(w, r, name)
 }

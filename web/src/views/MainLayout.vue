@@ -41,7 +41,11 @@
       </el-header>
 
       <el-main class="main">
-        <router-view />
+        <!-- 以 path 作为 key：同一组件在不同路由参数间切换（如从应用 A 详情切到应用 B）
+             会重新创建并触发 onMounted 重新拉取，避免沿用上一个应用的旧数据
+             （曾导致「访问入口已变更但页面不刷新」）。仅按 path 取 key，因此
+             同一路径内的 query 变化（如 /nodes?node=1）不会重建组件。 -->
+        <router-view :key="$route.path" />
       </el-main>
     </el-container>
 

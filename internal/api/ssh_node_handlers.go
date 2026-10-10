@@ -70,6 +70,46 @@ type sshInstallReq struct {
 	NetworkType        string `json:"network_type"`
 }
 
+// sshHostKeyReq 主机指纹探测入参（仅主机与端口，探测不发送任何凭据）。
+type sshHostKeyReq struct {
+	Host string `json:"host"`
+	Port int    `json:"port"`
+}
+
+// POST /api/nodes/ssh-hostkey — 探测目标主机 SSH 指纹并判定是否首次连接。
+//
+// 仅完成握手（不发送用户名/密码/私钥），返回指纹与 known_hosts 命中情况，
+// 供前端自动识别「是否首次添加」：非首次直接继续，首次才在页面上请求确认。
+func (a *API) sshProbeHostKey(w http.ResponseWriter, r *http.Request) {
+	var req sshHostKeyReq
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "请求格式错误")
+		return
+	}
+	req.Host = strings.TrimSpace(req.Host)
+	if req.Host == "" {
+		writeError(w, http.StatusBadRequest, "SSH 主机地址必填")
+		return
+	}
+	if req.Port == 0 {
+		req.Port = 22
+	}
+	if req.Port < 1 || req.Port > 65535 {
+		writeError(w, http.StatusBadRequest, "SSH 端口非法")
+		return
+	}
+	cfg := sshx.DialConfig{Host: req.Host, Port: req.Port}
+	if a.dataDir != "" {
+		cfg.KnownHostsFile = filepath.Join(a.dataDir, "known_hosts")
+	}
+	info, err := sshx.Probe(cfg, nil)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "主机指纹探测失败: "+err.Error())
+		return
+	}
+	writeJSON(w, info)
+}
+
 // POST /api/nodes/ssh-install — 通过 SSH 登录目标机执行 Agent 安装。
 func (a *API) sshInstallNode(w http.ResponseWriter, r *http.Request) {
 	var req sshInstallReq
@@ -243,6 +283,11 @@ func (a *API) sshInstallTask(ctx context.Context, w io.Writer, t *store.Backgrou
 	}
 	if a.dataDir != "" {
 		cfg.KnownHostsFile = filepath.Join(a.dataDir, "known_hosts")
+		// pin 策略校验通过后记录主机密钥：后续对同一主机的连接即自动判定为
+		// 「非首次」，无需再次弹出确认，实现「首次确认一次、之后自动继续」。
+		if cfg.HostKeyPolicy == sshx.PolicyPin {
+			cfg.OnHostKey = sshx.KnownHostRecorder(cfg.KnownHostsFile, p.Host, p.Port)
+		}
 	}
 	if p.AuthMode == "key" {
 		cfg.PrivateKeyPEM, cfg.Passphrase = credential, passphrase

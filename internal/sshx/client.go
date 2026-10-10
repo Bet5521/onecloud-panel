@@ -13,6 +13,8 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -58,6 +60,156 @@ type DialConfig struct {
 	HostKeyFingerprint string
 	KnownHostsFile     string
 	Timeout            time.Duration
+
+	// OnHostKey 在主机密钥通过校验后回调，供调用方落库/记录
+	// （如写入 known_hosts，使后续连接可自动判定为非首次）。
+	OnHostKey func(ssh.PublicKey)
+}
+
+// HostKeyInfo 目标主机 SSH 主机密钥探测结果。
+type HostKeyInfo struct {
+	Fingerprint string `json:"fingerprint"` // SHA256:...
+	KeyType     string `json:"key_type"`    // 如 ssh-ed25519
+	// Known 表示该指纹已记录在 known_hosts 中（即此前已确认过），可直接继续。
+	Known bool `json:"known"`
+	// Changed 表示同一主机已存在记录但密钥不同（可能被重置或遭遇中间人）。
+	Changed bool `json:"changed"`
+}
+
+// errProbeHalt 探测时用于在拿到主机密钥后立即中止握手（不再发送任何凭据）。
+var errProbeHalt = errors.New("sshx: host key captured")
+
+// Probe 仅完成 SSH 握手以获取目标主机密钥信息（不发送用户名/密码/私钥），
+// 并依据 known_hosts 判定是否首次连接。用于「首次确认」流程的自动识别。
+func Probe(cfg DialConfig, logw io.Writer) (*HostKeyInfo, error) {
+	host := strings.TrimSpace(cfg.Host)
+	if host == "" {
+		return nil, errors.New("SSH 主机地址必填")
+	}
+	port := cfg.Port
+	if port == 0 {
+		port = defaultPort
+	}
+	if port < 1 || port > 65535 {
+		return nil, errors.New("SSH 端口非法")
+	}
+	timeout := cfg.Timeout
+	if timeout <= 0 {
+		timeout = defaultTimeout
+	}
+	addr := net.JoinHostPort(host, strconv.Itoa(port))
+
+	var key ssh.PublicKey
+	cb := func(_ string, _ net.Addr, k ssh.PublicKey) error {
+		key = k
+		return errProbeHalt
+	}
+	if logw != nil {
+		fmt.Fprintf(logw, "[ssh] 探测 %s 主机密钥 …\n", addr)
+	}
+	raw, err := net.DialTimeout("tcp", addr, timeout)
+	if err != nil {
+		return nil, classifyDialError(err, addr)
+	}
+	defer raw.Close()
+
+	// 握手阶段即会回调 hostKeyCallback；返回 errProbeHalt 让其在认证前终止，
+	// 因此探测过程绝不会把凭据发给对端。
+	_, _, _, _ = ssh.NewClientConn(raw, addr, &ssh.ClientConfig{
+		User:            "probe",
+		Auth:            []ssh.AuthMethod{ssh.Password("probe")},
+		HostKeyCallback: cb,
+		Timeout:         timeout,
+	})
+	if key == nil {
+		return nil, fmt.Errorf("无法获取 %s 的 SSH 主机密钥：请确认主机可达且 SSH 端口开放", addr)
+	}
+	info := &HostKeyInfo{
+		Fingerprint: ssh.FingerprintSHA256(key),
+		KeyType:     key.Type(),
+	}
+	if file := strings.TrimSpace(cfg.KnownHostsFile); file != "" {
+		info.Known, info.Changed = knownHostState(file, addr, key)
+	}
+	if logw != nil {
+		fmt.Fprintf(logw, "[ssh] 目标主机 %s 指纹 %s（已确认=%v 已变更=%v）\n",
+			addr, info.Fingerprint, info.Known, info.Changed)
+	}
+	return info, nil
+}
+
+// KnownHostRecorder 返回一个回调，把通过校验的主机密钥追加到 known_hosts，
+// 使同一主机后续连接可自动判定为「非首次」。写入失败静默忽略（不阻断安装）。
+func KnownHostRecorder(file, host string, port int) func(ssh.PublicKey) {
+	if strings.TrimSpace(file) == "" {
+		return nil
+	}
+	return func(key ssh.PublicKey) {
+		_ = AppendKnownHost(file, host, port, key)
+	}
+}
+
+// AppendKnownHost 幂等地把一条主机密钥记录追加到 known_hosts 文件。
+func AppendKnownHost(file, host string, port int, key ssh.PublicKey) error {
+	file = strings.TrimSpace(file)
+	if file == "" {
+		return errors.New("known_hosts 路径为空")
+	}
+	host = strings.TrimSpace(host)
+	if host == "" {
+		return errors.New("主机地址必填")
+	}
+	if key == nil {
+		return errors.New("主机密钥为空")
+	}
+	if port == 0 {
+		port = defaultPort
+	}
+	// knownhosts.Line 内部会做地址归一化（22 端口省略、IPv6 加方括号）。
+	line := knownhosts.Line([]string{net.JoinHostPort(host, strconv.Itoa(port))}, key)
+
+	if b, err := os.ReadFile(file); err == nil {
+		for _, l := range strings.Split(string(b), "\n") {
+			if strings.TrimSpace(l) == strings.TrimSpace(line) {
+				return nil // 已存在，无需重复写入
+			}
+		}
+	}
+	if dir := filepath.Dir(file); dir != "" && dir != "." {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			return err
+		}
+	}
+	f, err := os.OpenFile(file, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	sep := ""
+	if st, err := f.Stat(); err == nil && st.Size() > 0 {
+		sep = "\n"
+	}
+	_, err = f.WriteString(sep + line + "\n")
+	return err
+}
+
+// knownHostState 依据 known_hosts 判定主机密钥状态：known=同一记录已存在，
+// changed=该主机已有记录但密钥不同（可能被重装或遭遇中间人）。
+func knownHostState(file, addr string, key ssh.PublicKey) (known, changed bool) {
+	cb, err := knownhosts.New(file)
+	if err != nil {
+		return false, false
+	}
+	remote := &net.TCPAddr{Port: defaultPort}
+	err = cb(addr, remote, key)
+	if err == nil {
+		return true, false
+	}
+	var ke *knownhosts.KeyError
+	if errors.As(err, &ke) && len(ke.Want) > 0 {
+		return false, true
+	}
+	return false, false
 }
 
 // Client 已建立的 SSH 连接。
@@ -246,6 +398,9 @@ func hostKeyCallback(policy string, cfg DialConfig, host string, logw io.Writer)
 		}
 		if subtle.ConstantTimeCompare([]byte(want), []byte(got)) != 1 {
 			return fmt.Errorf("主机指纹不匹配：期望 %s，实际 %s（可能遭遇中间人攻击）", want, got)
+		}
+		if cfg.OnHostKey != nil {
+			cfg.OnHostKey(key)
 		}
 		return nil
 	}, nil

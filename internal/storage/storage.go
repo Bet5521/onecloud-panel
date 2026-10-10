@@ -97,8 +97,29 @@ func listDevices(ctx context.Context, ex executor.Executor) ([]Device, error) {
 	out := filterBlockDevices(parseLsblk(r.Output))
 	// 系统盘识别失败时一律标记为不可操作，宁可失败也不误伤。
 	rootDisk, rerr := rootDiskPath(ctx, ex)
-	classifyDevices(out, rootDisk, rerr == nil)
+	// sysfs 的 device/type 能精确区分 mmcblk* 是 SD 卡还是板载 eMMC
+	//（lsblk 不暴露该属性）；读取失败时回退到可移除/序号启发式。
+	classifyDevices(out, rootDisk, rerr == nil, mmcDiskTypes(ctx, ex))
 	return out, nil
+}
+
+// mmcDiskTypes 读取各 mmcblk 磁盘的 sysfs device/type（SD / MMC / SDIO），
+// 用于精确区分 SD 卡与板载 eMMC。读取失败返回空 map，调用方回退启发式。
+func mmcDiskTypes(ctx context.Context, ex executor.Executor) map[string]string {
+	out := map[string]string{}
+	r, err := ex.Exec(ctx, "sh", "-c",
+		`for d in /sys/block/mmcblk*; do [ -e "$d/device/type" ] || continue; `+
+			`printf '%s %s\n' "${d##*/}" "$(cat "$d/device/type" 2>/dev/null)"; done`)
+	if err != nil || r.ExitCode != 0 {
+		return out
+	}
+	for _, line := range strings.Split(r.Output, "\n") {
+		f := strings.Fields(strings.TrimSpace(line))
+		if len(f) == 2 {
+			out[f[0]] = strings.ToUpper(f[1])
+		}
+	}
+	return out
 }
 
 // filterBlockDevices 仅保留真实磁盘与分区，剔除虚拟/启动类设备。
@@ -132,9 +153,10 @@ func isNonOperableDeviceName(name string) bool {
 	return false
 }
 
-// classifyDevices 依据传输总线、可移除标记与系统盘位置，标注每个设备的
-// system / kind / operable。rootOK=false 表示系统盘识别失败。
-func classifyDevices(devs []Device, rootDisk string, rootOK bool) {
+// classifyDevices 依据传输总线、sysfs 类型、可移除标记与系统盘位置，标注每个设备的
+// system / kind / operable。rootOK=false 表示系统盘识别失败；mmcTypes 为
+// mmcblk* → sysfs device/type（SD/MMC/SDIO）映射，用于精确区分 SD 卡与 eMMC。
+func classifyDevices(devs []Device, rootDisk string, rootOK bool, mmcTypes map[string]string) {
 	rootName := strings.TrimPrefix(rootDisk, "/dev/")
 	byName := make(map[string]*Device, len(devs))
 	for i := range devs {
@@ -164,13 +186,14 @@ func classifyDevices(devs []Device, rootDisk string, rootOK bool) {
 			d.Operable = false
 			continue
 		}
+		isMMC := transport == "mmc" || strings.HasPrefix(diskName, "mmcblk")
 		switch {
 		case d.System:
 			d.Kind = kindSystem
 		case transport == "usb":
 			d.Kind = kindUSB
-		case transport == "mmc" && (removable || hotplug || mmcDiskIndexAtLeast1(diskName)):
-			d.Kind = kindSD
+		case isMMC:
+			d.Kind = classifyMMC(diskName, mmcTypes[diskName], removable, hotplug)
 		case transport == "" && removable && hotplug:
 			// 个别 USB 桥接芯片不报告 TRAN，但「可移除 + 热插拔」足以判定为外接 USB 介质。
 			d.Kind = kindUSB
@@ -179,6 +202,22 @@ func classifyDevices(devs []Device, rootDisk string, rootOK bool) {
 		}
 		d.Operable = d.Kind == kindUSB || d.Kind == kindSD
 	}
+}
+
+// classifyMMC 判定 mmcblk* 磁盘属于 SD 卡还是内置 eMMC/SDIO：
+// 以 sysfs device/type 为准（SD→SD 卡，MMC/SDIO→内置），
+// 无法读取时回退「可移除/热插拔」与「次级控制器序号」启发式。
+func classifyMMC(diskName, mmcType string, removable, hotplug bool) string {
+	switch mmcType {
+	case "SD":
+		return kindSD
+	case "MMC", "SDIO":
+		return kindInternal
+	}
+	if removable || hotplug || mmcDiskIndexAtLeast1(diskName) {
+		return kindSD
+	}
+	return kindInternal
 }
 
 // mmcDiskIndexAtLeast1 判断是否为次级 MMC 控制器上的磁盘（mmcblk1+）。

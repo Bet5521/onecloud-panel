@@ -219,6 +219,10 @@ func (s *Service) maybeAutoUpgrade(n *store.Node, h *system.HostInfo) {
 	if !isOlder(h.AgentVersion, version.Version) {
 		return
 	}
+	// 架构未知或不支持时无法下发匹配的升级包，跳过（避免推错架构二进制）。
+	if system.AssetArch(n.Arch) == "" {
+		return
+	}
 	s.upgradeMu.Lock()
 	last, ok := s.upgradeCooldown[n.ID]
 	now := time.Now()
@@ -250,6 +254,9 @@ func (s *Service) UpgradeAgent(ctx context.Context, id int64) error {
 	}
 	if !IsOnline(n.LastSeen) {
 		return errors.New("节点离线，无法升级")
+	}
+	if system.AssetArch(n.Arch) == "" {
+		return fmt.Errorf("节点架构未知或不支持（arch=%q），无法匹配升级包", n.Arch)
 	}
 	enc, err := s.store.GetNodeTokenEncrypted(id)
 	if err != nil || enc == "" {

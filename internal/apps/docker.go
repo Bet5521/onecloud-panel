@@ -69,9 +69,20 @@ type containerState struct {
 }
 
 type containerInspect struct {
-	ID    string         `json:"Id"`
-	Name  string         `json:"Name"`
-	State containerState `json:"State"`
+	ID              string                   `json:"Id"`
+	Name            string                   `json:"Name"`
+	State           containerState           `json:"State"`
+	HostConfig      containerHostConfig      `json:"HostConfig"`
+	NetworkSettings containerNetworkSettings `json:"NetworkSettings"`
+}
+
+type containerHostConfig struct {
+	NetworkMode string `json:"NetworkMode"`
+}
+
+// containerNetworkSettings 仅取端口绑定：{"80/tcp":[{"HostIp":"0.0.0.0","HostPort":"8090"}]}。
+type containerNetworkSettings struct {
+	Ports map[string][]portBinding `json:"Ports"`
 }
 
 type imageInspect struct {
@@ -519,6 +530,8 @@ func (m *Manager) dockerStatus(ctx context.Context,
 		"method":         "docker",
 		"status":         in.Status,
 	}
+	// 默认端口取自配方声明；若容器已运行则以下列实际映射为准（用户可能改过端口）。
+	res["ports"] = recipePorts(recipe)
 	if cid != "" {
 		resp, err := eng.Do(ctx, "GET", "/containers/"+cid+"/json", nil, nil, "")
 		if err == nil {
@@ -528,6 +541,10 @@ func (m *Manager) dockerStatus(ctx context.Context,
 				if json.NewDecoder(resp.Body).Decode(&ci) == nil {
 					res["running"] = ci.State.Running
 					res["state"] = ci.State.Status
+					res["network_mode"] = ci.HostConfig.NetworkMode
+					if ps := accessPortsFromInspect(ci, recipe); len(ps) > 0 {
+						res["ports"] = ps
+					}
 				}
 			}
 		}

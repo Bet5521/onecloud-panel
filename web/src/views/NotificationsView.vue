@@ -7,7 +7,12 @@
 
     <el-card shadow="never">
       <el-table :data="items" v-loading="loading" empty-text="尚未配置通知通道">
-        <el-table-column prop="name" label="名称" min-width="140" />
+        <el-table-column label="名称" min-width="180">
+          <template #default="{ row }">
+            <span>{{ row.name }}</span>
+            <el-tag v-if="row.system" size="small" type="warning" effect="plain" class="sys-tag">系统通知</el-tag>
+          </template>
+        </el-table-column>
         <el-table-column label="类型" width="150">
           <template #default="{ row }">
             <el-tag size="small">{{ row.type_name || row.type }}</el-tag>
@@ -131,6 +136,14 @@
           </span>
         </el-form-item>
 
+        <el-form-item label="系统通知">
+          <el-switch v-model="form.system" />
+          <span class="hint">
+            标记为系统通知的通道仅用于系统级下发（如密码自助重置码），
+            不会出现在「用户管理」的通知方式选项中；只有非系统通道才能被用户选用。
+          </span>
+        </el-form-item>
+
         <el-form-item label="启用">
           <el-switch v-model="form.enabled" :disabled="!formConfigured" />
           <span v-if="!formConfigured" class="hint">
@@ -167,6 +180,7 @@ const form = reactive({
   type: 'wxpusher',
   name: '',
   enabled: true,
+  system: false,
   config: {},
   events: []
 })
@@ -309,6 +323,7 @@ function resetForm() {
   form.type = 'wxpusher'
   form.name = ''
   form.enabled = true
+  form.system = false
   form.config = {}
   form.events = []
 }
@@ -323,6 +338,7 @@ function openEdit(row) {
   form.type = row.type
   form.name = row.name
   form.enabled = row.enabled
+  form.system = !!row.system
   form.config = { ...(row.config || {}) }
   form.events = Array.isArray(row.events) ? [...row.events] : []
   dlg.value = true
@@ -343,6 +359,7 @@ async function save() {
       type: form.type,
       name: form.name.trim(),
       enabled: form.enabled,
+      system: !!form.system,
       config: { ...form.config },
       events: [...form.events]
     }
@@ -465,6 +482,9 @@ onMounted(() => {
 .event-tag {
   margin-right: 4px;
   margin-bottom: 2px;
+}
+.sys-tag {
+  margin-left: 6px;
 }
 .sched-card {
   margin-top: 16px;

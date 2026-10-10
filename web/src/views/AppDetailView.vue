@@ -47,9 +47,9 @@
         </el-descriptions-item>
         <el-descriptions-item label="访问入口">
           <el-space wrap>
-            <el-link v-for="p in accessPorts" :key="p.Port" type="primary"
+            <el-link v-for="p in accessPorts" :key="p.port" type="primary"
               :href="p.url" target="_blank">
-              :{{ p.Port }}<span v-if="p.Description">（{{ p.Description }}）</span>
+              :{{ p.port }}<span v-if="p.description">（{{ p.description }}）</span>
             </el-link>
             <span v-if="!accessPorts.length" class="muted">-</span>
           </el-space>
@@ -171,14 +171,23 @@ const isRunning = computed(() =>
 
 const wg = computed(() => status.value?.wireguard || null)
 
-// 访问入口：仅对 TCP/HTTP 端口生成链接，主机用节点地址；本机节点用当前访问主机
+// 访问入口：优先用状态接口返回的「实际端口」——安装时可能覆盖过端口映射，
+// 只看配方默认值会指向错误端口；取不到时回退到配方声明。
+// 主机用节点地址；本机节点用当前访问主机。
 const accessPorts = computed(() => {
-  if (!recipe.value) return []
-  let host = node.value?.address?.split(':')[0]
-  if (node.value?.mode === 'local' || !host) host = location.hostname
-  return (recipe.value.Ports || [])
-    .filter((p) => p.Proto !== 'udp')
-    .map((p) => ({ ...p, url: `http://${host}:${p.Port}` }))
+  const host = (() => {
+    let h = node.value?.address?.split(':')[0]
+    if (node.value?.mode === 'local' || !h) h = location.hostname
+    return h
+  })()
+  const list = (status.value?.ports?.length)
+    ? status.value.ports
+    : (recipe.value?.Ports || []).map((p) => ({
+        port: p.Port, proto: p.Proto || 'tcp', description: p.Description
+      }))
+  return list
+    .filter((p) => (p.proto || 'tcp').toLowerCase() !== 'udp')
+    .map((p) => ({ ...p, url: `http://${host}:${p.port}` }))
 })
 
 async function loadAll() {

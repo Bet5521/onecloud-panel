@@ -1,9 +1,87 @@
 package storage
 
 import (
+	"context"
+	"io"
 	"strings"
 	"testing"
+
+	"onecloud-panel/internal/executor"
 )
+
+// fakeExec 依据命令（含首个参数）返回预设输出，用于覆盖 listDevices 完整链路。
+type fakeExec struct {
+	fn func(name string, args []string) executor.Result
+}
+
+func (f *fakeExec) Exec(_ context.Context, name string, args ...string) (*executor.Result, error) {
+	r := f.fn(name, args)
+	return &r, nil
+}
+func (f *fakeExec) ExecStream(context.Context, io.Writer, string, ...string) (int, error) {
+	return 0, nil
+}
+func (f *fakeExec) ReadFile(string) ([]byte, error) { return nil, nil }
+func (f *fakeExec) WriteFile(string, []byte) error  { return nil }
+func (f *fakeExec) Exists(string) (bool, error)     { return false, nil }
+
+// TestListDevicesOneCloud 覆盖玩客云抽样：mmcblk0 是 SD 卡（sysfs type=SD），
+// 系统盘在 eMMC(mmcbkl1)。面板应把 SD 卡判为可操作、eMMC/系统盘判为不可操作。
+func TestListDevicesOneCloud(t *testing.T) {
+	lsblkOut := strings.Join([]string{
+		`NAME="mmcblk0" PATH="/dev/mmcblk0" SIZE="31267481600" TYPE="disk" FSTYPE="" MOUNTPOINT="" RO="0" RM="1" HOTPLUG="1" MODEL="SD128" LABEL="" TRAN="mmc" PKNAME=""`,
+		`NAME="mmcblk0p1" PATH="/dev/mmcblk0p1" SIZE="31267459072" TYPE="part" FSTYPE="exfat" MOUNTPOINT="" RO="0" RM="1" HOTPLUG="1" MODEL="" LABEL="SD" TRAN="" PKNAME="mmcblk0"`,
+		`NAME="mmcblk1" PATH="/dev/mmcblk1" SIZE="7818182656" TYPE="disk" FSTYPE="" MOUNTPOINT="" RO="0" RM="0" HOTPLUG="0" MODEL="eMMC" LABEL="" TRAN="mmc" PKNAME=""`,
+		`NAME="mmcblk1p2" PATH="/dev/mmcblk1p2" SIZE="7340032000" TYPE="part" FSTYPE="ext4" MOUNTPOINT="/" RO="0" RM="0" HOTPLUG="0" MODEL="" LABEL="root" TRAN="" PKNAME="mmcblk1"`,
+		`NAME="sda" PATH="/dev/sda" SIZE="16000000000" TYPE="disk" FSTYPE="vfat" MOUNTPOINT="/mnt/usb" RO="0" RM="1" HOTPLUG="1" MODEL="USB DISK" LABEL="UDISK" TRAN="usb" PKNAME=""`,
+		`NAME="zram0" PATH="/dev/zram0" SIZE="1073741824" TYPE="disk" FSTYPE="" MOUNTPOINT="[SWAP]" RO="0" RM="0" HOTPLUG="0" MODEL="" LABEL="" TRAN="" PKNAME=""`,
+	}, "\n")
+	ex := &fakeExec{fn: func(name string, args []string) executor.Result {
+		switch {
+		case name == "findmnt":
+			return executor.Result{ExitCode: 0, Output: "/dev/mmcblk1p2\n"}
+		case name == "lsblk" && len(args) > 0 && args[0] == "-no":
+			return executor.Result{ExitCode: 0, Output: "mmcblk1\n"}
+		case name == "lsblk":
+			return executor.Result{ExitCode: 0, Output: lsblkOut}
+		case name == "sh":
+			return executor.Result{ExitCode: 0, Output: "mmcblk0 SD\nmmcblk1 MMC\n"}
+		}
+		return executor.Result{ExitCode: 0}
+	}}
+
+	devs, err := listDevices(context.Background(), ex)
+	if err != nil {
+		t.Fatalf("listDevices: %v", err)
+	}
+	idx := map[string]Device{}
+	for _, d := range devs {
+		idx[d.Name] = d
+	}
+	if _, ok := idx["zram0"]; ok {
+		t.Fatal("zram 应被过滤")
+	}
+	if d := idx["mmcblk0"]; d.Kind != kindSD || !d.Operable {
+		t.Fatalf("SD 卡应可操作: %+v", d)
+	}
+	if d := idx["mmcblk1"]; d.Kind != kindSystem || d.Operable {
+		t.Fatalf("eMMC 系统盘应不可操作: %+v", d)
+	}
+	if d := idx["sda"]; d.Kind != kindUSB || !d.Operable {
+		t.Fatalf("USB 应可操作: %+v", d)
+	}
+}
+
+// mmcDiskTypes 应解析出 name→type（大写）。
+func TestMMCDiskTypesParse(t *testing.T) {
+	ex := &fakeExec{fn: func(name string, args []string) executor.Result {
+		return executor.Result{ExitCode: 0, Output: "mmcblk0 sd\nmmcblk1 MMC\n"}
+	}}
+	got := mmcDiskTypes(context.Background(), ex)
+	if got["mmcblk0"] != "SD" || got["mmcblk1"] != "MMC" {
+		t.Fatalf("解析结果错误: %+v", got)
+	}
+}
 
 func TestParseLsblk(t *testing.T) {
 	out := strings.Join([]string{
@@ -64,7 +142,9 @@ func TestClassifyDevices(t *testing.T) {
 		}
 	}
 
-	classifyDevices(devs, "/dev/mmcblk0", true)
+	// 模拟 sysfs：mmcblk0 是板载 eMMC（MMC），mmcblk1/2 是 SD 卡（SD）。
+	mmcTypes := map[string]string{"mmcblk0": "MMC", "mmcblk1": "SD", "mmcblk2": "SD"}
+	classifyDevices(devs, "/dev/mmcblk0", true, mmcTypes)
 	idx := map[string]Device{}
 	for _, d := range devs {
 		idx[d.Name] = d
@@ -84,7 +164,7 @@ func TestClassifyDevices(t *testing.T) {
 		{"sda1", kindUSB, false, true},          // USB 分区
 		{"nvme0n1", kindInternal, false, false}, // 内置 NVMe
 		{"sdb", kindUSB, false, true},           // 未上报 TRAN 的 USB（可移除+热插拔兜底）
-		{"mmcblk2", kindSD, false, true},        // 未上报 RM 的次级 MMC（SD 卡槽兜底）
+		{"mmcblk2", kindSD, false, true},        // 次级 MMC 且 sysfs 判定为 SD 卡
 	}
 	for _, c := range cases {
 		d, ok := idx[c.name]
@@ -97,9 +177,47 @@ func TestClassifyDevices(t *testing.T) {
 		}
 	}
 
+	// sysfs 明确为 eMMC 的 mmcblk* 不得因序号启发式被误判为 SD。
+	devsE := filterBlockDevices(parseLsblk(out))
+	classifyDevices(devsE, "/dev/mmcblk0", true, map[string]string{"mmcblk1": "MMC", "mmcblk2": "MMC"})
+	for _, d := range devsE {
+		if (d.Name == "mmcblk1" || d.Name == "mmcblk2") && d.Kind != kindInternal {
+			t.Fatalf("%s 明确为 MMC，应判为内置，实际 %s", d.Name, d.Kind)
+		}
+	}
+
+	// 玩客云关键场景：mmcblk0 是 SD 卡（sysfs type=SD）、系统盘在 eMMC(mmcbkl1)。
+	// 旧实现按「序号 0 即 eMMC」会把它误判为内置、不可操作。
+	oc := strings.Join([]string{
+		`NAME="mmcblk0" PATH="/dev/mmcblk0" SIZE="31267481600" TYPE="disk" FSTYPE="" MOUNTPOINT="" RO="0" RM="1" HOTPLUG="1" MODEL="SD128" LABEL="" TRAN="mmc" PKNAME=""`,
+		`NAME="mmcblk1" PATH="/dev/mmcblk1" SIZE="7818182656" TYPE="disk" FSTYPE="" MOUNTPOINT="" RO="0" RM="0" HOTPLUG="0" MODEL="eMMC" LABEL="" TRAN="mmc" PKNAME=""`,
+		`NAME="mmcblk1p2" PATH="/dev/mmcblk1p2" SIZE="7340032000" TYPE="part" FSTYPE="ext4" MOUNTPOINT="/" RO="0" RM="0" HOTPLUG="0" MODEL="" LABEL="root" TRAN="" PKNAME="mmcblk1"`,
+	}, "\n")
+	odev := filterBlockDevices(parseLsblk(oc))
+	classifyDevices(odev, "/dev/mmcblk1", true, map[string]string{"mmcblk0": "SD", "mmcblk1": "MMC"})
+	oidx := map[string]Device{}
+	for _, d := range odev {
+		oidx[d.Name] = d
+	}
+	if d := oidx["mmcblk0"]; d.Kind != kindSD || !d.Operable {
+		t.Fatalf("玩客云 mmcblk0(SD) 应可操作，实际 kind=%s operable=%v", d.Kind, d.Operable)
+	}
+	if d := oidx["mmcblk1"]; d.Kind != kindSystem || d.Operable {
+		t.Fatalf("玩客云 mmcblk1(eMMC/系统盘) 应不可操作，实际 kind=%s operable=%v", d.Kind, d.Operable)
+	}
+
+	// sysfs 不可用（空 mmcTypes）时回退序号启发式：mmcblk1 仍判为 SD。
+	devsF := filterBlockDevices(parseLsblk(out))
+	classifyDevices(devsF, "/dev/mmcblk0", true, nil)
+	for _, d := range devsF {
+		if d.Name == "mmcblk1" && d.Kind != kindSD {
+			t.Fatalf("sysfs 缺失时应回退序号启发式判为 SD，实际 %s", d.Kind)
+		}
+	}
+
 	// 系统盘识别失败时，一切设备均不可操作。
 	devs2 := filterBlockDevices(parseLsblk(out))
-	classifyDevices(devs2, "", false)
+	classifyDevices(devs2, "", false, mmcTypes)
 	for _, d := range devs2 {
 		if d.Operable {
 			t.Fatalf("系统盘未知时 %s 不应可操作", d.Name)

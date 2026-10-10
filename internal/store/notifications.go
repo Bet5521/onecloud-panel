@@ -11,6 +11,7 @@ type NotificationChannel struct {
 	Name       string
 	ConfigJSON string
 	Enabled    bool
+	System     bool  // 系统通知：不可被用户选作个人通知方式
 	TestedAt   int64 // 0 = 从未测试成功
 	CreatedAt  int64
 	UpdatedAt  int64
@@ -18,7 +19,8 @@ type NotificationChannel struct {
 
 // ListNotificationChannels 返回全部通知通道。
 func (s *Store) ListNotificationChannels() ([]NotificationChannel, error) {
-	rows, err := s.DB.Query(`SELECT id, type, name, config_json, enabled, COALESCE(tested_at, 0), created_at, updated_at
+	rows, err := s.DB.Query(`SELECT id, type, name, config_json, enabled, is_system,
+	                                COALESCE(tested_at, 0), created_at, updated_at
 	                         FROM notification_channels ORDER BY id`)
 	if err != nil {
 		return nil, err
@@ -27,11 +29,13 @@ func (s *Store) ListNotificationChannels() ([]NotificationChannel, error) {
 	var out []NotificationChannel
 	for rows.Next() {
 		var c NotificationChannel
-		var enabled int
-		if err := rows.Scan(&c.ID, &c.Type, &c.Name, &c.ConfigJSON, &enabled, &c.TestedAt, &c.CreatedAt, &c.UpdatedAt); err != nil {
+		var enabled, system int
+		if err := rows.Scan(&c.ID, &c.Type, &c.Name, &c.ConfigJSON, &enabled, &system,
+			&c.TestedAt, &c.CreatedAt, &c.UpdatedAt); err != nil {
 			return nil, err
 		}
 		c.Enabled = enabled != 0
+		c.System = system != 0
 		out = append(out, c)
 	}
 	return out, rows.Err()
@@ -40,14 +44,17 @@ func (s *Store) ListNotificationChannels() ([]NotificationChannel, error) {
 // NotificationChannelByID 按 ID 查询通道。
 func (s *Store) NotificationChannelByID(id int64) (*NotificationChannel, error) {
 	var c NotificationChannel
-	var enabled int
-	err := s.DB.QueryRow(`SELECT id, type, name, config_json, enabled, COALESCE(tested_at, 0), created_at, updated_at
+	var enabled, system int
+	err := s.DB.QueryRow(`SELECT id, type, name, config_json, enabled, is_system,
+	                             COALESCE(tested_at, 0), created_at, updated_at
 	                      FROM notification_channels WHERE id = ?`, id).
-		Scan(&c.ID, &c.Type, &c.Name, &c.ConfigJSON, &enabled, &c.TestedAt, &c.CreatedAt, &c.UpdatedAt)
+		Scan(&c.ID, &c.Type, &c.Name, &c.ConfigJSON, &enabled, &system,
+			&c.TestedAt, &c.CreatedAt, &c.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}
 	c.Enabled = enabled != 0
+	c.System = system != 0
 	return &c, nil
 }
 
@@ -70,9 +77,9 @@ func (s *Store) EnabledNotificationChannels() ([]NotificationChannel, error) {
 func (s *Store) CreateNotificationChannel(c *NotificationChannel) (*NotificationChannel, error) {
 	t := now()
 	res, err := s.DB.Exec(
-		`INSERT INTO notification_channels (type, name, config_json, enabled, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?)`,
-		c.Type, c.Name, c.ConfigJSON, boolInt(c.Enabled), t, t)
+		`INSERT INTO notification_channels (type, name, config_json, enabled, is_system, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		c.Type, c.Name, c.ConfigJSON, boolInt(c.Enabled), boolInt(c.System), t, t)
 	if err != nil {
 		return nil, err
 	}
@@ -83,11 +90,11 @@ func (s *Store) CreateNotificationChannel(c *NotificationChannel) (*Notification
 	return s.NotificationChannelByID(id)
 }
 
-// UpdateNotificationChannel 更新名称/配置/启用状态。
-func (s *Store) UpdateNotificationChannel(id int64, name, configJSON string, enabled bool) error {
+// UpdateNotificationChannel 更新名称/配置/启用状态/系统通知标记。
+func (s *Store) UpdateNotificationChannel(id int64, name, configJSON string, enabled, system bool) error {
 	_, err := s.DB.Exec(
-		`UPDATE notification_channels SET name = ?, config_json = ?, enabled = ?, updated_at = ? WHERE id = ?`,
-		name, configJSON, boolInt(enabled), now(), id)
+		`UPDATE notification_channels SET name = ?, config_json = ?, enabled = ?, is_system = ?, updated_at = ? WHERE id = ?`,
+		name, configJSON, boolInt(enabled), boolInt(system), now(), id)
 	return err
 }
 

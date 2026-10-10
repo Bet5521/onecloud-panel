@@ -3,6 +3,9 @@ package store
 import (
 	"database/sql"
 	"encoding/json"
+	"strconv"
+	"strings"
+	"time"
 )
 
 // NotificationSchedule 定时状态摘要设置（单行）。
@@ -159,16 +162,21 @@ func (s *Store) GetNotificationSchedule() (*NotificationSchedule, error) {
 	var enabled, includeNodes, includeApps int
 	var channelIDs string
 	var interval int
+	// updated_at 的历史类型不一致（014 建为 DATETIME 默认 CURRENT_TIMESTAMP，
+	// 019 起统一为 INTEGER）。这里按 any 读取再归一，避免驱动返回 time.Time
+	// 时 int64 扫描失败导致整个接口 500。
+	var updated any
 	err := s.DB.QueryRow(
-		`SELECT enabled, interval_hours, include_nodes, include_apps, channel_ids, COALESCE(updated_at, 0)
+		`SELECT enabled, interval_hours, include_nodes, include_apps, channel_ids, updated_at
 		 FROM notification_schedule WHERE id = 1`).
-		Scan(&enabled, &interval, &includeNodes, &includeApps, &channelIDs, &sc.UpdatedAt)
+		Scan(&enabled, &interval, &includeNodes, &includeApps, &channelIDs, &updated)
 	if err == sql.ErrNoRows {
 		return &NotificationSchedule{IntervalHours: 24, IncludeNodes: true, IncludeApps: true}, nil
 	}
 	if err != nil {
 		return nil, err
 	}
+	sc.UpdatedAt = unixFromAny(updated)
 	sc.Enabled = enabled != 0
 	sc.IntervalHours = interval
 	sc.IncludeNodes = includeNodes != 0
@@ -177,6 +185,53 @@ func (s *Store) GetNotificationSchedule() (*NotificationSchedule, error) {
 		sc.ChannelIDs = nil
 	}
 	return &sc, nil
+}
+
+// unixFromAny 把驱动返回的时间值归一为 Unix 秒：
+// 兼容 INTEGER / REAL（驱动可能给 int64/float64）、TEXT 时间戳与 time.Time。
+func unixFromAny(v any) int64 {
+	switch t := v.(type) {
+	case nil:
+		return 0
+	case int64:
+		return t
+	case int:
+		return int64(t)
+	case float64:
+		return int64(t)
+	case []byte:
+		return unixFromText(string(t))
+	case string:
+		return unixFromText(t)
+	case time.Time:
+		return t.Unix()
+	}
+	return 0
+}
+
+// unixFromText 解析文本时间：纯数字视为 Unix 秒，否则按常见 SQLite/RFC3339 布局解析。
+func unixFromText(s string) int64 {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return 0
+	}
+	if n, err := strconv.ParseInt(s, 10, 64); err == nil {
+		return n
+	}
+	for _, layout := range []string{
+		"2006-01-02 15:04:05.999999999-07:00",
+		"2006-01-02 15:04:05-07:00",
+		"2006-01-02 15:04:05.999999999",
+		"2006-01-02 15:04:05",
+		"2006-01-02T15:04:05Z07:00",
+		"2006-01-02T15:04:05",
+		"2006-01-02",
+	} {
+		if t, err := time.Parse(layout, s); err == nil {
+			return t.Unix()
+		}
+	}
+	return 0
 }
 
 // SaveNotificationSchedule 保存定时摘要设置。

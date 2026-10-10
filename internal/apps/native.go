@@ -184,6 +184,8 @@ func (m *Manager) nativeStatus(ctx context.Context, nodeID int64, recipeID strin
 		"service_name": in.ServiceName,
 		"status":       in.Status,
 		"method":       "native",
+		// 直装应用直接监听宿主端口，配方声明即为实际访问入口。
+		"ports": recipePorts(recipe),
 	}
 	if recipe.Healthcheck != nil {
 		ok, detail := m.probe(ctx, ex, recipe.Healthcheck)

@@ -2,7 +2,6 @@ package api
 
 import (
 	"net/http"
-	"path/filepath"
 	"regexp"
 
 	"onecloud-panel/internal/scripts"
@@ -23,18 +22,13 @@ func (a *API) installScript(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(b)
 }
 
-// GET /dl/{name} — 从发布目录下载对应架构二进制（公开）。
+// GET /dl/{name} — 下发对应架构二进制（公开）。
+// 面板本机架构直接下发自身；其他架构优先取本地发布目录，缺失时从在线 Release 拉取转发。
 func (a *API) downloadBinary(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	if !dlNameRe.MatchString(name) {
 		writeError(w, http.StatusBadRequest, "非法的下载文件名")
 		return
 	}
-	if a.releaseDir == "" {
-		writeError(w, http.StatusNotFound, "发布目录未配置")
-		return
-	}
-	p := filepath.Join(a.releaseDir, filepath.Base(name))
-	w.Header().Set("Content-Type", "application/octet-stream")
-	http.ServeFile(w, r, p)
+	a.serveReleaseBinary(w, r, name)
 }

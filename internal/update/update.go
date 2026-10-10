@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -21,9 +22,10 @@ import (
 
 // 仓库地址（版本校验与下载均基于此仓库）。
 var (
-	githubAPIURL  = "https://api.github.com/repos/Bet5521/onecloud-panel/releases/latest"
-	githubDLBase  = "https://github.com/Bet5521/onecloud-panel/releases/download"
-	checksumsName = "checksums.txt"
+	githubAPIBase  = "https://api.github.com/repos/Bet5521/onecloud-panel/releases"
+	githubAPIURL   = githubAPIBase + "/latest"
+	githubDLBase   = "https://github.com/Bet5521/onecloud-panel/releases/download"
+	checksumsName  = "checksums.txt"
 )
 
 // Release GitHub Release 信息。
@@ -78,22 +80,38 @@ func wrapProxy(proxy, rawURL string) string {
 
 // FetchLatest 获取最新 Release：优先直连 GitHub API，失败且配置了代理时走代理重试。
 func FetchLatest(ctx context.Context, proxy string) (*Release, error) {
-	rel, directErr := fetchLatestOnce(ctx, "")
+	return fetchRelease(ctx, proxy, githubAPIURL, "查询最新版本失败")
+}
+
+// FetchByTag 获取指定 tag 的 Release（用于按面板自身版本取对应架构产物）。
+// tag 为空或为 "dev"（开发构建）时退化为 FetchLatest。
+func FetchByTag(ctx context.Context, proxy, tag string) (*Release, error) {
+	tag = strings.TrimSpace(tag)
+	if tag == "" || tag == "dev" {
+		return FetchLatest(ctx, proxy)
+	}
+	return fetchRelease(ctx, proxy, githubAPIBase+"/tags/"+url.PathEscape(tag),
+		fmt.Sprintf("查询 Release %s 失败", tag))
+}
+
+// fetchRelease 直连优先、代理兜底地拉取一个 Release JSON。
+func fetchRelease(ctx context.Context, proxy, apiURL, whatFmt string) (*Release, error) {
+	rel, directErr := fetchReleaseOnce(ctx, "", apiURL)
 	if directErr == nil {
 		return rel, nil
 	}
 	if proxy == "" {
-		return nil, fmt.Errorf("查询最新版本失败: %w", directErr)
+		return nil, fmt.Errorf("%s: %w", whatFmt, directErr)
 	}
-	rel, err := fetchLatestOnce(ctx, proxy)
+	rel, err := fetchReleaseOnce(ctx, proxy, apiURL)
 	if err != nil {
 		return nil, fmt.Errorf("直连与代理均查询失败（直连: %v；代理: %w）", directErr, err)
 	}
 	return rel, nil
 }
 
-func fetchLatestOnce(ctx context.Context, proxy string) (*Release, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, wrapProxy(proxy, githubAPIURL), nil)
+func fetchReleaseOnce(ctx context.Context, proxy, apiURL string) (*Release, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, wrapProxy(proxy, apiURL), nil)
 	if err != nil {
 		return nil, err
 	}
@@ -233,6 +251,32 @@ func FindAsset(rel *Release, name string) *Asset {
 		}
 	}
 	return nil
+}
+
+// OpenAsset 打开 Release 资产内容的读取流（自动应用 GitHub 加速代理）。
+// 返回的 size 为 -1 表示服务端未提供 Content-Length。
+// 调用方负责关闭返回的 ReadCloser。用于把发布产物透传给节点（跨架构安装/升级）。
+func OpenAsset(ctx context.Context, proxy string, asset *Asset) (io.ReadCloser, int64, error) {
+	if asset == nil {
+		return nil, -1, errors.New("资产为空")
+	}
+	url := asset.BrowserDownloadURL
+	if url == "" {
+		return nil, -1, errors.New("资产缺少下载地址")
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, wrapProxy(proxy, url), nil)
+	if err != nil {
+		return nil, -1, err
+	}
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return nil, -1, err
+	}
+	if resp.StatusCode != http.StatusOK {
+		resp.Body.Close()
+		return nil, -1, fmt.Errorf("下载 %s 返回 HTTP %d", asset.Name, resp.StatusCode)
+	}
+	return resp.Body, resp.ContentLength, nil
 }
 
 // download 下载 URL 内容到 dest，返回实际下载字节数。

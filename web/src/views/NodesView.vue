@@ -177,34 +177,6 @@
           </template>
         </el-card>
 
-        <!-- 存储识别 -->
-        <el-card v-if="cur.storage && cur.storage.length" shadow="never" class="section">
-          <template #header><span>存储设备</span></template>
-          <el-table :data="cur.storage" size="small">
-            <el-table-column prop="name" label="设备" width="120" />
-            <el-table-column label="类型" width="150">
-              <template #default="{ row }">
-                <el-tag size="small"
-                  :type="row.class === 'sd' ? 'warning' : (row.class === 'emmc' ? 'success' : 'info')"
-                  effect="plain">{{ row.class_label }}</el-tag>
-              </template>
-            </el-table-column>
-            <el-table-column prop="model" label="型号" show-overflow-tooltip />
-            <el-table-column label="容量" width="120">
-              <template #default="{ row }">{{ fmtBytes(row.size_bytes) }}</template>
-            </el-table-column>
-            <el-table-column label="启动盘" width="80">
-              <template #default="{ row }">
-                <el-tag v-if="row.is_boot" size="small" type="danger" effect="plain">是</el-tag>
-                <span v-else class="muted">-</span>
-              </template>
-            </el-table-column>
-            <el-table-column label="可移动" width="80">
-              <template #default="{ row }">{{ row.removable ? '是' : '否' }}</template>
-            </el-table-column>
-          </el-table>
-        </el-card>
-
         <!-- 标签与分组 -->
         <el-card v-if="can('node:write') || cur?.tags || cur?.node_group" shadow="never" class="section">
           <template #header><span>标签与分组</span></template>
@@ -523,19 +495,24 @@
             </template>
             <el-form-item label="主机指纹">
               <el-radio-group v-model="ssh.host_key_policy">
-                <el-radio-button value="pin">首次确认（pin）</el-radio-button>
+                <el-radio-button value="pin">首次确认（自动）</el-radio-button>
                 <el-radio-button value="strict">known_hosts（strict）</el-radio-button>
               </el-radio-group>
               <div class="hint">
                 <template v-if="ssh.host_key_policy === 'pin'">
-                  首次提交会在任务输出中回报目标主机指纹，核对无误后填入下方再次提交：
+                  点击「开始安装」时自动探测目标主机指纹：此前已确认过的主机直接继续；
+                  首次连接会在此页面弹出指纹，核对无误后确认即可，无需手工复制。
                 </template>
                 <template v-else>
                   依据面板数据目录下的 <code>known_hosts</code> 文件严格校验
                 </template>
               </div>
-              <el-input v-if="ssh.host_key_policy === 'pin'" v-model="ssh.host_key_fingerprint"
-                placeholder="SHA256:xxxx（首次提交可留空）" style="margin-top:6px" />
+              <div v-if="ssh.host_key_policy === 'pin' && ssh.host_key_fingerprint"
+                class="hint" style="margin-top:6px">
+                已确认指纹：<span class="mono">{{ ssh.host_key_fingerprint }}</span>
+                <el-button text type="primary" size="small" style="margin-left:6px"
+                  @click="ssh.host_key_fingerprint = ''">重新检测</el-button>
+              </div>
             </el-form-item>
             <el-form-item label="节点名称">
               <el-input v-model="ssh.name" placeholder="留空则使用目标机主机名" style="width: 240px" />
@@ -557,6 +534,39 @@
         <el-button v-if="addTab === 'manual'" type="primary" @click="submitManual">保存</el-button>
         <el-button v-if="addTab === 'ssh'" type="primary" :loading="sshSubmitting"
           @click="submitSSH">开始安装</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 首次连接：目标主机指纹确认（自动探测后由用户决定是否继续） -->
+    <el-dialog v-model="pinConfirmVisible" title="确认目标主机指纹" width="580px"
+      :close-on-click-modal="false" append-to-body>
+      <el-alert v-if="pinInfo?.changed" type="error" :closable="false" show-icon
+        title="该主机的 SSH 指纹与此前记录不一致"
+        description="目标主机可能被重装，也可能遭遇中间人攻击。请务必与目标主机核对无误后再决定是否继续。" />
+      <el-alert v-else type="warning" :closable="false" show-icon
+        title="首次连接该主机，请核对 SSH 主机指纹" />
+      <div class="pin-body">
+        <div class="pin-row">
+          <span class="pin-label">主机</span>
+          <span class="mono">{{ ssh.host }}{{ ssh.port && Number(ssh.port) !== 22 ? ':' + ssh.port : '' }}</span>
+        </div>
+        <div class="pin-row">
+          <span class="pin-label">算法</span>
+          <span class="mono">{{ pinInfo?.key_type || '-' }}</span>
+        </div>
+      </div>
+      <p class="mono pin-fp">{{ pinInfo?.fingerprint }}</p>
+      <div class="hint">
+        请在目标主机执行 <code>ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub</code>
+        （或对应算法公钥）比对指纹。一致请点「确认并继续」；不一致请立即取消。
+        确认后该指纹会被记录，后续再添加同一主机将自动继续、无需再次确认。
+      </div>
+      <template #footer>
+        <el-button @click="pinConfirmVisible = false">取消</el-button>
+        <el-button :type="pinInfo?.changed ? 'danger' : 'primary'" :loading="sshSubmitting"
+          @click="confirmPinAndInstall">
+          {{ pinInfo?.changed ? '我已知晓，仍然继续' : '确认并继续' }}
+        </el-button>
       </template>
     </el-dialog>
 
@@ -732,8 +742,8 @@
 </template>
 
 <script setup>
-import { ref, computed, nextTick } from 'vue'
-import { useRouter } from 'vue-router'
+import { ref, computed, nextTick, watch } from 'vue'
+import { useRouter, useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { get, post, put, del, showErr } from '../api/http'
 import { session } from '../session'
@@ -745,6 +755,7 @@ import { FitAddon } from '@xterm/addon-fit'
 import '@xterm/xterm/css/xterm.css'
 
 const router = useRouter()
+const route = useRoute()
 
 const nodes = ref([])
 const loading = ref(false)
@@ -780,7 +791,8 @@ async function load() {
     if (fOnline.value) q.set('online', fOnline.value)
     if (fGroup.value) q.set('group', fGroup.value)
     const d = await get('/api/nodes' + (q.toString() ? '?' + q : ''))
-    nodes.value = d.items
+    nodes.value = d.items || []
+    maybeOpenFromQuery()
   } catch (e) {
     showErr(e, '节点列表加载失败')
   } finally {
@@ -788,6 +800,31 @@ async function load() {
   }
 }
 load()
+
+// 支持从仪表盘等外部页双击节点后跳转过来并自动打开详情：
+// /nodes?node=<id>。打开后立即清理 query，避免刷新/返回时重复弹出。
+let queryConsumed = false
+function maybeOpenFromQuery() {
+  if (queryConsumed) return
+  const raw = Array.isArray(route.query.node) ? route.query.node[0] : route.query.node
+  const id = Number(raw)
+  if (!raw || !Number.isFinite(id)) return
+  queryConsumed = true
+  router.replace({ path: '/nodes' })
+  const row = nodes.value.find((n) => n.id === id)
+  if (!row) {
+    ElMessage.warning('未找到指定节点（可能已被删除或不在可见范围）')
+    return
+  }
+  openDetail(row)
+}
+
+// 已在节点页时再次带 query 跳转（组件未重建）也能打开详情。
+watch(() => route.query.node, (v) => {
+  if (!v) return
+  queryConsumed = false
+  maybeOpenFromQuery()
+})
 
 // ---- 详情抽屉 ----
 const drawer = ref(false)
@@ -1683,6 +1720,9 @@ const sshEmpty = () => ({
 })
 const ssh = ref(sshEmpty())
 const sshSubmitting = ref(false)
+// 主机指纹自动探测与「首次确认」弹窗状态
+const pinConfirmVisible = ref(false)
+const pinInfo = ref(null)
 
 async function submitSSH() {
   const v = ssh.value
@@ -1698,9 +1738,42 @@ async function submitSSH() {
     ElMessage.warning('请粘贴 SSH 私钥')
     return
   }
+  // pin 策略且未预置指纹：先探测主机指纹，自动判断是否首次添加。
+  // 已确认过的主机（known_hosts 命中）直接继续；首次连接才弹窗请用户确认。
+  if (v.host_key_policy === 'pin' && !v.host_key_fingerprint) {
+    sshSubmitting.value = true
+    try {
+      const info = await post('/api/nodes/ssh-hostkey', { host: v.host, port: v.port })
+      if (info.known && !info.changed) {
+        v.host_key_fingerprint = info.fingerprint
+      } else {
+        pinInfo.value = info
+        pinConfirmVisible.value = true
+        return
+      }
+    } catch (e) {
+      ElMessage.error({ message: e.message || '主机指纹探测失败', duration: 8000, showClose: true })
+      return
+    } finally {
+      sshSubmitting.value = false
+    }
+  }
+  await doSubmitSSH()
+}
+
+// confirmPinAndInstall 用户在指纹弹窗确认后，填入指纹并提交安装。
+async function confirmPinAndInstall() {
+  if (pinInfo.value?.fingerprint) {
+    ssh.value.host_key_fingerprint = pinInfo.value.fingerprint
+  }
+  pinConfirmVisible.value = false
+  await doSubmitSSH()
+}
+
+async function doSubmitSSH() {
   sshSubmitting.value = true
   try {
-    const d = await post('/api/nodes/ssh-install', { ...v })
+    const d = await post('/api/nodes/ssh-install', { ...ssh.value })
     taskEndpoint.value = '/api/nodes/ssh-install?id='
     taskTitle.value = '节点 SSH 安装进度'
     addVisible.value = false
@@ -1817,5 +1890,29 @@ async function saveNetworkType() {
   font-size: 12px;
   color: #909399;
   white-space: nowrap;
+}
+.pin-body {
+  margin: 14px 0 6px;
+}
+.pin-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  line-height: 1.9;
+}
+.pin-label {
+  width: 40px;
+  color: #606266;
+  font-size: 13px;
+}
+.pin-fp {
+  text-align: center;
+  font-size: 15px;
+  font-weight: 600;
+  margin: 10px 0 12px;
+  padding: 10px;
+  border-radius: 6px;
+  background: #f5f7fa;
+  word-break: break-all;
 }
 </style>

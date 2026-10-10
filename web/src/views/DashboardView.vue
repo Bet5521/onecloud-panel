@@ -27,7 +27,8 @@
       </template>
       <el-row :gutter="14">
         <el-col :xs="24" :sm="12" :md="8" v-for="n in nodes" :key="n.id" style="margin-bottom: 14px">
-          <div class="node-card" :class="{ offline: !n.online }">
+          <div class="node-card" :class="{ offline: !n.online }" title="双击查看节点详情"
+            @dblclick="openNodeDetail(n)">
             <div class="node-head">
               <span class="node-name">{{ n.name }}</span>
               <el-tag size="small" :type="n.online ? 'success' : 'info'" effect="plain">
@@ -156,9 +157,17 @@
 
 <script setup>
 import { ref, computed, onMounted } from 'vue'
+import { useRouter } from 'vue-router'
 import { Refresh } from '@element-plus/icons-vue'
 import { get, showErr } from '../api/http'
 import { fmtTime, fmtBytes } from '../utils'
+
+const router = useRouter()
+
+// 双击节点卡片 → 跳转节点管理并自动打开该节点详情。
+function openNodeDetail(n) {
+  router.push({ path: '/nodes', query: { node: n.id } })
+}
 
 const loading = ref(true)
 // 统计数据用 null 表示「尚未就绪」。绝不能默认成 0 ——
@@ -274,7 +283,10 @@ onMounted(load)
   padding: 12px;
   height: 100%;
   background: #fff;
+  cursor: pointer;
+  transition: border-color 0.2s, box-shadow 0.2s;
 }
+.node-card:hover { border-color: #c6e2ff; box-shadow: 0 2px 10px rgba(64, 158, 255, 0.15); }
 .node-card.offline { opacity: 0.75; }
 .node-head { display: flex; justify-content: space-between; align-items: center; }
 .node-name { font-weight: 600; font-size: 15px; }

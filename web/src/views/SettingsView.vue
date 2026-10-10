@@ -4,9 +4,11 @@
       <h2>面板设置</h2>
     </div>
 
+    <!-- 每张卡片独占一个 el-col：在 ≥md 时两列、每行恰好两张卡，
+         避免了「左列只有 2 张、右列堆一堆」的不规整排布。 -->
     <el-row :gutter="12">
-      <!-- ============ 左列 ============ -->
-      <el-col :xs="24" :lg="12">
+      <!-- 1. 基本设置 -->
+      <el-col :xs="24" :md="12" class="col-gap">
         <el-card shadow="never" v-loading="loading">
           <template #header><span>基本设置</span></template>
           <el-form label-width="110px">
@@ -31,9 +33,52 @@
             </el-form-item>
           </el-form>
         </el-card>
+      </el-col>
 
-        <!-- ============ 传输安全 HTTPS ============ -->
-        <el-card shadow="never" class="section-gap" v-loading="loading">
+      <!-- 2. 版本与运行 -->
+      <el-col :xs="24" :md="12" class="col-gap">
+        <el-card shadow="never">
+          <template #header><span>版本与运行</span></template>
+          <el-descriptions :column="1" size="small" border>
+            <el-descriptions-item label="版本">{{ status.version || info.version || '-' }}</el-descriptions-item>
+            <el-descriptions-item label="构建提交">{{ status.commit || '-' }}</el-descriptions-item>
+            <el-descriptions-item label="systemd 状态">
+              <el-tag :type="status.systemd_active ? 'success' : 'info'" size="small">
+                {{ status.systemd_active ? status.systemd_state || 'active' : status.systemd_detail || '未托管' }}
+              </el-tag>
+            </el-descriptions-item>
+            <el-descriptions-item label="监听地址">{{ status.listen || '-' }}</el-descriptions-item>
+            <el-descriptions-item label="已运行">{{ fmtDuration(status.uptime_seconds) }}</el-descriptions-item>
+            <el-descriptions-item label="二进制路径"><span class="path">{{ status.binary || '-' }}</span></el-descriptions-item>
+            <el-descriptions-item label="数据目录"><span class="path">{{ status.data_dir || '-' }}</span></el-descriptions-item>
+          </el-descriptions>
+
+          <!-- 在线更新 -->
+          <div class="update-bar">
+            <el-button v-if="can('settings:write')" size="small" :loading="updateChecking" @click="checkUpdate">
+              检查更新
+            </el-button>
+            <el-button v-if="canUpdate" size="small" type="primary" :loading="updating" @click="applyUpdate">
+              立即更新
+            </el-button>
+            <el-tag v-if="updateInfo && !updateInfo.unsupported" size="small"
+              :type="updateInfo.has_update ? 'warning' : 'success'">
+              {{ updateInfo.has_update ? '可更新至 ' + updateInfo.latest : '已是最新版本 ' + updateInfo.latest }}
+            </el-tag>
+            <el-tag v-if="updateInfo && updateInfo.unsupported" size="small" type="info">
+              {{ updateInfo.unsupported }}
+            </el-tag>
+          </div>
+          <div v-if="updateInfo && updateInfo.notes" class="update-notes">
+            <div class="update-notes-title">{{ updateInfo.latest }} 更新说明</div>
+            <pre class="update-notes-body">{{ updateInfo.notes }}</pre>
+          </div>
+        </el-card>
+      </el-col>
+
+      <!-- 3. 传输安全 HTTPS -->
+      <el-col :xs="24" :md="12" class="col-gap">
+        <el-card shadow="never" v-loading="loading">
           <template #header>
             <div class="card-head">
               <span>传输安全（HTTPS）</span>
@@ -96,48 +141,9 @@
         </el-card>
       </el-col>
 
-      <!-- ============ 右列 ============ -->
-      <el-col :xs="24" :lg="12">
-        <el-card shadow="never" class="mobile-gap">
-          <template #header><span>版本与运行</span></template>
-          <el-descriptions :column="1" size="small" border>
-            <el-descriptions-item label="版本">{{ status.version || info.version || '-' }}</el-descriptions-item>
-            <el-descriptions-item label="构建提交">{{ status.commit || '-' }}</el-descriptions-item>
-            <el-descriptions-item label="systemd 状态">
-              <el-tag :type="status.systemd_active ? 'success' : 'info'" size="small">
-                {{ status.systemd_active ? status.systemd_state || 'active' : status.systemd_detail || '未托管' }}
-              </el-tag>
-            </el-descriptions-item>
-            <el-descriptions-item label="监听地址">{{ status.listen || '-' }}</el-descriptions-item>
-            <el-descriptions-item label="已运行">{{ fmtDuration(status.uptime_seconds) }}</el-descriptions-item>
-            <el-descriptions-item label="二进制路径"><span class="path">{{ status.binary || '-' }}</span></el-descriptions-item>
-            <el-descriptions-item label="数据目录"><span class="path">{{ status.data_dir || '-' }}</span></el-descriptions-item>
-          </el-descriptions>
-
-          <!-- 在线更新 -->
-          <div class="update-bar">
-            <el-button v-if="can('settings:write')" size="small" :loading="updateChecking" @click="checkUpdate">
-              检查更新
-            </el-button>
-            <el-button v-if="canUpdate" size="small" type="primary" :loading="updating" @click="applyUpdate">
-              立即更新
-            </el-button>
-            <el-tag v-if="updateInfo && !updateInfo.unsupported" size="small"
-              :type="updateInfo.has_update ? 'warning' : 'success'">
-              {{ updateInfo.has_update ? '可更新至 ' + updateInfo.latest : '已是最新版本 ' + updateInfo.latest }}
-            </el-tag>
-            <el-tag v-if="updateInfo && updateInfo.unsupported" size="small" type="info">
-              {{ updateInfo.unsupported }}
-            </el-tag>
-          </div>
-          <div v-if="updateInfo && updateInfo.notes" class="update-notes">
-            <div class="update-notes-title">{{ updateInfo.latest }} 更新说明</div>
-            <pre class="update-notes-body">{{ updateInfo.notes }}</pre>
-          </div>
-        </el-card>
-
-        <!-- ============ 邮件服务 SMTP ============ -->
-        <el-card shadow="never" class="section-gap">
+      <!-- 4. 邮件服务 SMTP -->
+      <el-col :xs="24" :md="12" class="col-gap">
+        <el-card shadow="never">
           <template #header>
             <div class="card-head">
               <span>邮件服务（SMTP）</span>
@@ -178,28 +184,11 @@
           </el-form>
           <p class="hint">SMTP 用于接收登录页密码自助重置码；不配置时重置码会输出到面板服务日志。</p>
         </el-card>
+      </el-col>
 
-        <!-- ============ 数据备份与恢复 ============ -->
-        <el-card shadow="never" class="section-gap">
-          <template #header><span>数据备份与恢复</span></template>
-          <el-alert type="warning" :closable="false" show-icon style="margin-bottom: 12px"
-            title="恢复会用上传的备份覆盖当前数据库并重启面板，请谨慎操作" />
-          <div class="backup-desc">
-            导出面板数据（panel.db 一致性快照 + manifest.json）。恢复：停止面板 → 解包覆盖数据目录中的
-            <span class="path">panel.db</span>（含 secret.key 时一并覆盖）→ 启动面板。
-          </div>
-          <el-checkbox v-model="backupWithSecret">
-            一并打包 secret.key（完整可恢复备份必需；泄露后持有者可解密节点 Token 与 SSH 凭据）
-          </el-checkbox>
-          <el-space wrap style="margin-top: 8px">
-            <el-button type="primary" :icon="Download" @click="downloadBackup">下载备份</el-button>
-            <el-button @click="pickRestore">选择备份文件恢复</el-button>
-            <input ref="restoreInput" type="file" accept=".db" style="display: none" @change="onRestoreFile" />
-          </el-space>
-        </el-card>
-
-        <!-- ============ Docker 镜像加速与仓库 ============ -->
-        <el-card shadow="never" class="section-gap" v-loading="loading">
+      <!-- 5. Docker 镜像加速与仓库 -->
+      <el-col :xs="24" :md="12" class="col-gap">
+        <el-card shadow="never" v-loading="loading">
           <template #header><span>Docker 镜像加速与第三方仓库（面板级默认）</span></template>
           <el-form label-width="130px">
             <el-form-item label="镜像加速地址">
@@ -218,6 +207,27 @@
               <el-button type="primary" :loading="dockerSaving" @click="saveDocker">保存 Docker 配置</el-button>
             </el-form-item>
           </el-form>
+        </el-card>
+      </el-col>
+
+      <!-- 6. 数据备份与恢复 -->
+      <el-col :xs="24" :md="12" class="col-gap">
+        <el-card shadow="never">
+          <template #header><span>数据备份与恢复</span></template>
+          <el-alert type="warning" :closable="false" show-icon style="margin-bottom: 12px"
+            title="恢复会用上传的备份覆盖当前数据库并重启面板，请谨慎操作" />
+          <div class="backup-desc">
+            导出面板数据（panel.db 一致性快照 + manifest.json）。恢复：停止面板 → 解包覆盖数据目录中的
+            <span class="path">panel.db</span>（含 secret.key 时一并覆盖）→ 启动面板。
+          </div>
+          <el-checkbox v-model="backupWithSecret">
+            一并打包 secret.key（完整可恢复备份必需；泄露后持有者可解密节点 Token 与 SSH 凭据）
+          </el-checkbox>
+          <el-space wrap style="margin-top: 8px">
+            <el-button type="primary" :icon="Download" @click="downloadBackup">下载备份</el-button>
+            <el-button @click="pickRestore">选择备份文件恢复</el-button>
+            <input ref="restoreInput" type="file" accept=".db" style="display: none" @change="onRestoreFile" />
+          </el-space>
         </el-card>
       </el-col>
     </el-row>
@@ -515,6 +525,10 @@ async function onRestoreFile(e) {
 .section-gap {
   margin-top: 12px;
 }
+/* 每张卡片独占一列：保证换行时上下卡片之间也有间距（含小屏单列堆叠）。 */
+.col-gap {
+  margin-bottom: 12px;
+}
 .card-head {
   display: flex;
   justify-content: space-between;
@@ -576,8 +590,8 @@ async function onRestoreFile(e) {
   font-family: inherit;
 }
 @media (max-width: 1199px) {
-  .mobile-gap {
-    margin-top: 12px;
+  .update-notes-body {
+    max-height: 140px;
   }
 }
 </style>

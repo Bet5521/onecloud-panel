@@ -11,6 +11,9 @@
 #   onecloud-panel-darwin-{amd64,arm64}
 #   checksums.txt（每行 `<sha256>  <文件名>`，供 sha256 校验回退使用）
 #
+# Release 的「更新说明」= 本次提交的标题 + 正文（面板「设置 → 版本更新」会原样展示），
+#   所以提交信息要写成面向用户的变更摘要，而不是只有一行标题。
+#
 # 只改文档（*.md / docs/ / .workbuddy/）的提交不会触发发布，避免产生无意义的版本。
 # 如需「每次 push 都发版」，删除下面的 paths-ignore 即可；
 # 如需跳过某次提交，可在 commit message 中加入 [skip ci]。
@@ -59,12 +62,33 @@ jobs:
     outputs:
       tag: ${{ steps.ver.outputs.tag }}
       version: ${{ steps.ver.outputs.version }}
+      notes: ${{ steps.notes.outputs.notes }}
     steps:
       - name: 检出代码
         uses: actions/checkout@v7
         with:
           # 需要完整历史与 tag，才能读取/自增版本号。
           fetch-depth: 0
+
+      - name: 提取更新说明
+        id: notes
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Release 的「更新说明」直接采用本次提交的标题 + 正文。
+          # 默认的 generate_release_notes 只会列出提交标题与 PR 列表，
+          # 用户看不到「改了什么、为什么改」；而面板「设置 → 版本更新」
+          # 会把 Release body 原文展示出来，所以这里必须给出可读的摘要。
+          SHA="$(git rev-parse HEAD)"
+          {
+            echo 'notes<<OCP_NOTES_EOF'
+            git log -1 --pretty=%B "$SHA"
+            echo
+            echo '---'
+            echo
+            echo "完整提交：https://github.com/${GITHUB_REPOSITORY}/commit/${SHA}"
+            echo 'OCP_NOTES_EOF'
+          } >> "$GITHUB_OUTPUT"
 
       - name: 安装 Go（读取 go.mod 版本）
         uses: actions/setup-go@v7
@@ -235,7 +259,9 @@ jobs:
         with:
           tag_name: ${{ needs.build.outputs.tag }}
           name: ${{ needs.build.outputs.tag }}
-          generate_release_notes: true
+          # 用提交内容生成的摘要，而不是 GitHub 自动生成的提交标题列表
+          body: ${{ needs.build.outputs.notes }}
+          generate_release_notes: false
           fail_on_unmatched_files: true
           files: |
             dist/onecloud-panel-*

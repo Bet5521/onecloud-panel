@@ -82,28 +82,44 @@
             <el-select v-model="histNode" size="small" style="width: 180px" placeholder="选择节点" @change="loadHistory">
               <el-option v-for="n in nodes" :key="n.id" :label="n.name" :value="n.id" />
             </el-select>
+            <el-select v-model="histHours" size="small" style="width: 110px" @change="loadHistory">
+              <el-option v-for="h in [6, 12, 24]" :key="h" :label="`最近 ${h} 小时`" :value="h" />
+            </el-select>
             <el-button text :loading="histLoading" @click="loadHistory">刷新</el-button>
           </div>
         </div>
       </template>
-      <el-table v-if="hist.length" :data="hist" size="small" max-height="320" style="width: 100%">
-        <el-table-column label="时间" width="160">
-          <template #default="{ row }">{{ fmtTime(row.ts) }}</template>
-        </el-table-column>
-        <el-table-column label="CPU" width="110">
-          <template #default="{ row }">{{ (row.cpu_pct || 0).toFixed(1) }}%</template>
-        </el-table-column>
-        <el-table-column label="内存" width="110">
-          <template #default="{ row }">{{ (row.mem_pct || 0).toFixed(1) }}%</template>
-        </el-table-column>
-        <el-table-column label="磁盘" width="110">
-          <template #default="{ row }">{{ (row.disk_pct || 0).toFixed(1) }}%</template>
-        </el-table-column>
-        <el-table-column label="负载1m" width="100">
-          <template #default="{ row }">{{ (row.load1 || 0).toFixed(2) }}</template>
-        </el-table-column>
-      </el-table>
-      <div v-else class="muted">选择节点查看历史指标（每 30 秒采样一次，最近 24 小时）</div>
+      <el-row :gutter="14">
+        <!-- 左：原始采样清单（核对具体数值用） -->
+        <el-col :xs="24" :lg="11">
+          <el-table v-if="hist.length" :data="hist" size="small" max-height="320" style="width: 100%">
+            <el-table-column label="时间" width="160">
+              <template #default="{ row }">{{ fmtTime(row.ts) }}</template>
+            </el-table-column>
+            <el-table-column label="CPU" width="110">
+              <template #default="{ row }">{{ (row.cpu_pct || 0).toFixed(1) }}%</template>
+            </el-table-column>
+            <el-table-column label="内存" width="110">
+              <template #default="{ row }">{{ (row.mem_pct || 0).toFixed(1) }}%</template>
+            </el-table-column>
+            <el-table-column label="磁盘" width="110">
+              <template #default="{ row }">{{ (row.disk_pct || 0).toFixed(1) }}%</template>
+            </el-table-column>
+            <el-table-column label="负载1m" width="100">
+              <template #default="{ row }">{{ (row.load1 || 0).toFixed(2) }}</template>
+            </el-table-column>
+          </el-table>
+          <div v-else class="muted">暂无采样数据（每 30 秒采样一次，保留最近 7 天）</div>
+        </el-col>
+        <!-- 右：趋势图（看走势用）。比例类走左轴 0–100，负载绝对值小，单独走右轴 -->
+        <el-col :xs="24" :lg="13">
+          <metric-trend-chart :labels="histLabels" :series="histSeries" :height="300" :y-max="100" />
+          <div class="muted" style="font-size: 12px; margin-top: 2px">
+            左轴为百分比（CPU / 内存 / 磁盘），负载为绝对值走右轴；点击图例可隐藏指标，悬停查看该时刻读数
+          </div>
+        </el-col>
+      </el-row>
+      <div v-if="!histNode" class="muted">选择节点查看历史指标</div>
     </el-card>
 
     <el-row :gutter="14" style="margin-top: 14px">
@@ -161,6 +177,7 @@ import { useRouter } from 'vue-router'
 import { Refresh } from '@element-plus/icons-vue'
 import { get, showErr } from '../api/http'
 import { fmtTime, fmtBytes } from '../utils'
+import MetricTrendChart from '../components/MetricTrendChart.vue'
 
 const router = useRouter()
 
@@ -189,8 +206,29 @@ const showEmpty = (list) => loaded.value && !loadFailed.value && list.length ===
 
 // 历史指标
 const histNode = ref(null)
+const histHours = ref(24)
 const hist = ref([])
 const histLoading = ref(false)
+
+const pctFmt = (v) => v.toFixed(1) + '%'
+const fmtClock = (ts) => {
+  if (!ts) return '-'
+  const d = new Date(ts * 1000)
+  const p = (n) => String(n).padStart(2, '0')
+  return `${p(d.getHours())}:${p(d.getMinutes())}`
+}
+
+// 图表横轴只到分钟：24 小时里有 2880 个点，全写成 HH:MM:SS 会糊成一片
+const histLabels = computed(() => hist.value.map((r) => fmtClock(r.ts)))
+const histSeries = computed(() => [
+  { name: 'CPU', color: '#409eff', data: hist.value.map((r) => r.cpu_pct), fmt: pctFmt },
+  { name: '内存', color: '#67c23a', data: hist.value.map((r) => r.mem_pct), fmt: pctFmt },
+  { name: '磁盘', color: '#e6a23c', data: hist.value.map((r) => r.disk_pct), fmt: pctFmt },
+  {
+    name: '负载1m', color: '#909399', data: hist.value.map((r) => r.load1),
+    axis: 'right', dash: '4 3', fmt: (v) => v.toFixed(2)
+  }
+])
 
 const cards = computed(() => [
   { label: '节点总数', value: num(stats.value?.nodes_total), color: '#409eff' },
@@ -259,7 +297,7 @@ async function loadHistory() {
   if (!histNode.value) return
   histLoading.value = true
   try {
-    const d = await get('/api/dashboard/history?node=' + histNode.value + '&hours=24')
+    const d = await get('/api/dashboard/history?node=' + histNode.value + '&hours=' + histHours.value)
     hist.value = d.items ?? []
   } catch {
     hist.value = []

@@ -72,7 +72,8 @@ func (s *server) dockerProxy(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 透传到本机 socket；不设整体超时，由 ctx 控制（logs/stats 可能是流式）。
-	client := docker.NewLocalClient(dockerSocketPath, 0)
+	// 客户端必须复用：每个请求新建 Transport 会泄漏连接与其 readLoop/writeLoop。
+	client := docker.LocalHTTPClient(dockerSocketPath)
 	target := "http://docker" + enginePath
 	if r.URL.RawQuery != "" {
 		target += "?" + r.URL.RawQuery

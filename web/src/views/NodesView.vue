@@ -748,7 +748,7 @@
 </template>
 
 <script setup>
-import { ref, computed, nextTick, watch } from 'vue'
+import { ref, computed, nextTick, watch, onBeforeUnmount } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { get, post, put, del, showErr } from '../api/http'
@@ -1441,6 +1441,15 @@ function closeTerminal() {
   termState.value = 'form'
   termHostKey.value = ''
 }
+
+// 组件被卸载（切路由/被销毁）时终端对话框不会触发 @close，
+// 必须在这里兜底释放：否则 WebSocket 保持打开，服务端那条 SSH 会话与其
+// 收发 goroutine 会一直挂着；前端这边 xterm 实例、ResizeObserver 和
+// 终端缓冲区也全都留在内存里。来回切几次页面就是一路累积。
+onBeforeUnmount(() => {
+  teardownTerm()
+  termVisible.value = false
+})
 
 // ---- 节点 Agent 自升级 ----
 const panelVersion = ref('')

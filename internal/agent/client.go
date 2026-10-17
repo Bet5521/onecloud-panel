@@ -12,6 +12,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"onecloud-panel/internal/docker"
@@ -81,18 +82,56 @@ func panelURL(server, path string) string {
 	return s + path
 }
 
-func doJSON(req *http.Request, out any, wantStatus int, insecure bool, pin string) error {
-	client := &http.Client{Timeout: 15 * time.Second}
+// panelClients 按 (insecure, pin) 缓存心跳/注册用的 HTTP 客户端。
+//
+// 每次心跳新建 Transport 会持续泄漏：Transport 的空闲连接常驻两个 goroutine，
+// goroutine 又是 GC 根并反向引用 Transport，导致它永远不被回收；零值
+// IdleConnTimeout 还意味着空闲连接永不超时。心跳 30s 一次，一天就是数千个
+// 永不释放的 TLS 连接与缓冲区。
+var (
+	panelClientMu sync.Mutex
+	panelClients  = map[string]*http.Client{}
+)
+
+const panelClientTimeout = 15 * time.Second
+
+// panelHTTPClient 返回复用的客户端；无 pin/insecure 时走 net/http 共享 Transport。
+func panelHTTPClient(insecure bool, pin string) *http.Client {
+	var key string
+	var tr *http.Transport
 	switch {
 	case pin != "":
 		// 优先指纹固定：仅接受证书指纹匹配，无需系统 CA 信任
-		client.Transport = pinnedTransport(pin)
+		key = "pin:" + normalizePin(pin)
+		tr = pinnedTransport(pin)
 	case insecure:
 		// 自签证书场景：仅跳过证书校验，仍完成 TLS 握手（OCP_INSECURE_TLS）
-		client.Transport = &http.Transport{
-			TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec
-		}
+		key = "insecure"
+		tr = newAgentTransport(&tls.Config{InsecureSkipVerify: true}) //nolint:gosec
+	default:
+		// 默认走 http.DefaultTransport 的全局连接池，无需自定义
+		key = "default"
+		tr = nil
 	}
+	panelClientMu.Lock()
+	defer panelClientMu.Unlock()
+	if c, ok := panelClients[key]; ok {
+		return c
+	}
+	var c *http.Client
+	if tr == nil {
+		// 注意不能写成 Transport: tr —— 值为 nil 的 *http.Transport 赋给接口
+		// 会得到「非 nil 接口」，Client 会拿它发请求并 panic。这里保持零值走默认池。
+		c = &http.Client{Timeout: panelClientTimeout}
+	} else {
+		c = &http.Client{Timeout: panelClientTimeout, Transport: tr}
+	}
+	panelClients[key] = c
+	return c
+}
+
+func doJSON(req *http.Request, out any, wantStatus int, insecure bool, pin string) error {
+	client := panelHTTPClient(insecure, pin)
 	resp, err := client.Do(req)
 	if err != nil {
 		return err
@@ -105,22 +144,31 @@ func doJSON(req *http.Request, out any, wantStatus int, insecure bool, pin strin
 	return json.Unmarshal(data, out)
 }
 
+// newAgentTransport 构造带连接池上界的 Transport。
+// 显式设置 IdleConnTimeout/连接数上限，避免依赖零值语义（零值 = 空闲连接永不超时）。
+func newAgentTransport(tlsCfg *tls.Config) *http.Transport {
+	return &http.Transport{
+		TLSClientConfig:     tlsCfg,
+		MaxIdleConns:        8,
+		MaxIdleConnsPerHost: 8,
+		IdleConnTimeout:     90 * time.Second,
+	}
+}
+
 // pinnedTransport 返回一个仅接受指纹匹配的 TLS 传输层。
 // 面板使用自签/内部 CA 证书时，可固定其证书 SHA256 指纹，避免 InsecureSkipVerify 的 MITM 风险。
 func pinnedTransport(pin string) *http.Transport {
 	expected := normalizePin(pin)
-	return &http.Transport{
-		TLSClientConfig: &tls.Config{
-			// 自行校验指纹，故跳过标准链校验（gosec 误报，此处为受控场景）
-			InsecureSkipVerify: true, //nolint:gosec
-			VerifyPeerCertificate: func(rawCerts [][]byte, _ [][]*x509.Certificate) error {
-				if matchPin(rawCerts, expected) {
-					return nil
-				}
-				return fmt.Errorf("面板证书指纹不匹配（期望 %s）", expected)
-			},
+	return newAgentTransport(&tls.Config{
+		// 自行校验指纹，故跳过标准链校验（gosec 误报，此处为受控场景）
+		InsecureSkipVerify: true, //nolint:gosec
+		VerifyPeerCertificate: func(rawCerts [][]byte, _ [][]*x509.Certificate) error {
+			if matchPin(rawCerts, expected) {
+				return nil
+			}
+			return fmt.Errorf("面板证书指纹不匹配（期望 %s）", expected)
 		},
-	}
+	})
 }
 
 // normalizePin 归一化指纹：去除空白、可选 "sha256:" 前缀，转小写。

@@ -26,10 +26,10 @@ type Manager struct {
 	recipes     *recipes.Registry
 	box         *secretbox.Box
 	audit       *audit.Service
-	NotifyEvent func(event, title, body string)                  // 事件通知回调（panel.go 装配注入；nil 安全）
-	execHook    func(*store.Node) (executor.Executor, error)     // 仅测试用
-	engineHook  func(*store.Node) (*docker.Engine, error)        // 仅测试用
-	binaryDir   string                                           // 自定义二进制目录
+	NotifyEvent func(event, title, body string)              // 事件通知回调（panel.go 装配注入；nil 安全）
+	execHook    func(*store.Node) (executor.Executor, error) // 仅测试用
+	engineHook  func(*store.Node) (*docker.Engine, error)    // 仅测试用
+	binaryDir   string                                       // 自定义二进制目录
 }
 
 // New 创建管理器。
@@ -97,8 +97,10 @@ func (m *Manager) EngineFor(n *store.Node) (*docker.Engine, error) {
 		return m.engineHook(n)
 	}
 	if n.Mode == "local" {
-		// 不设客户端超时：拉取镜像等流式操作由调用方 context 控制生命周期
-		return docker.NewEngineWithClient(docker.NewLocalClient("", 0)), nil
+		// 不设客户端超时：拉取镜像等流式操作由调用方 context 控制生命周期。
+		// 必须用共享客户端——EngineFor 每次请求都会调用，新建 Transport 会
+		// 泄漏连接与其 goroutine（详见 docker.LocalHTTPClient 的说明）。
+		return docker.NewEngineWithClient(docker.LocalHTTPClient("")), nil
 	}
 	ac, err := m.nodeAgentClient(n)
 	if err != nil {
